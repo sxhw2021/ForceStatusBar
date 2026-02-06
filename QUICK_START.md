@@ -7,21 +7,7 @@
 - Android SDK (API 26+)
 - JDK 8 或更高版本
 
-### 可选：下载 Xposed API JAR
-创建 `app/libs` 目录并下载以下文件：
-```bash
-# Linux/Mac
-mkdir -p app/libs
-wget https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82.jar -O app/libs/api-82.jar
-wget https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82-sources.jar -O app/libs/api-82-sources.jar
 
-# Windows PowerShell
-New-Item -ItemType Directory -Force -Path app/libs
-Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82.jar" -OutFile "app/libs/api-82.jar"
-Invoke-WebRequest -Uri "https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82-sources.jar" -OutFile "app/libs/api-82-sources.jar"
-```
-
-或者手动下载后放置到 `app/libs/` 目录。
 
 ## 2. 编译项目
 
@@ -79,7 +65,10 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ## 常见问题
 
 ### Q: 编译时提示找不到 Xposed API
-**A**: 确保已将 `api-82.jar` 放入 `app/libs/` 目录，然后重新同步 Gradle。
+**A**: 
+1. 确保 `settings.gradle` 中配置了 Xposed Maven 仓库：`maven { url 'https://api.xposed.info/' }`
+2. 点击 Android Studio 中的 "Sync Project with Gradle Files"
+3. 等待 Gradle 自动下载依赖
 
 ### Q: 模块已启用但状态栏仍被隐藏
 **A**: 

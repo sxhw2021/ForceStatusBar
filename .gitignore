@@ -77,3 +77,6 @@ fastlane/readme.md
 
 # Version control
 vcs.xml
+
+# Gradle Wrapper (自动下载)
+gradle/wrapper/gradle-wrapper.jar

@@ -4,7 +4,7 @@
 
 ## 功能特性
 
-- ✅ 自动下载 Xposed API 依赖
+- ✅ 自动从 Xposed Maven 仓库下载依赖
 - ✅ 自动构建 Debug APK
 - ✅ 自动构建并签名 Release APK
 - ✅ 自动创建 GitHub Release
@@ -135,12 +135,11 @@ on:
 
 1. **检出代码** - 使用 `actions/checkout@v4`
 2. **设置 JDK** - 使用 JDK 17 (Temurin 发行版)
-3. **下载 Xposed API** - 自动从 Maven Central 下载
-4. **构建 Debug APK** - 运行 `./gradlew assembleDebug`
-5. **构建 Release APK** (仅 tag) - 运行 `./gradlew assembleRelease`
-6. **签名 Release APK** (仅 tag) - 使用配置的密钥签名
-7. **上传产物** - 使用 `actions/upload-artifact@v4`
-8. **创建 Release** (仅 tag) - 使用 `softprops/action-gh-release@v1`
+3. **构建 Debug APK** - Gradle 自动从 Xposed Maven 仓库下载依赖并构建
+4. **构建 Release APK** (仅 tag) - 运行 `./gradlew assembleRelease`
+5. **签名 Release APK** (仅 tag) - 使用配置的密钥签名
+6. **上传产物** - 使用 `actions/upload-artifact@v4`
+7. **创建 Release** (仅 tag) - 使用 `softprops/action-gh-release@v1`
 
 ## 故障排除
 
@@ -152,7 +151,10 @@ Could not find de.robv.android.xposed:api:82
 ```
 
 **解决方案**：
-工作流会自动下载 Xposed API JAR 文件，无需手动添加。如果失败，检查网络连接或手动下载后放入 `app/libs/` 目录。
+Gradle 会自动从 `https://api.xposed.info/` 仓库下载 Xposed API。如果失败，请检查：
+1. `settings.gradle` 中是否配置了 Xposed Maven 仓库
+2. 网络连接是否正常
+3. 仓库地址是否可以访问
 
 ### 签名失败
 

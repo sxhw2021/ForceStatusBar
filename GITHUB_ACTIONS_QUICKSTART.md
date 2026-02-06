@@ -140,7 +140,7 @@ base64 -i release.keystore -o release.keystore.base64
 - 点击失败的 workflow
 - 查看具体步骤的日志
 - 常见错误：
-  - 网络问题导致 Xposed API 下载失败 → 重试
+  - 网络问题导致 Gradle 依赖下载失败 → 重试
   - Gradle 版本不兼容 → 检查配置
   - 签名密钥错误 → 检查 secrets 配置
 

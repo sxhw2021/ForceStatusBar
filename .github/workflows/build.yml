@@ -34,12 +34,6 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
       
-    - name: Download Xposed API
-      run: |
-        mkdir -p app/libs
-        wget https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82.jar -O app/libs/api-82.jar
-        wget https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82-sources.jar -O app/libs/api-82-sources.jar
-
     - name: Build with Gradle
       run: ./gradlew assembleDebug
 

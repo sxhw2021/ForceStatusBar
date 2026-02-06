@@ -56,6 +56,8 @@
    - 在 Actions 页面下载构建产物
    - 或在 Releases 页面下载发布版本
 
+**注意**：Gradle 会自动从 Xposed Maven 仓库 (`https://api.xposed.info/`) 下载 Xposed API。
+
 详细配置请参考 [GITHUB_ACTIONS.md](GITHUB_ACTIONS.md)
 
 ### 方法二：使用 Android Studio

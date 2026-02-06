@@ -26,7 +26,7 @@ ForceStatusBar/
 │   │           └── values/
 │   │               ├── strings.xml
 │   │               └── colors.xml
-│   └── libs/                     # Xposed API JAR
+│   └── libs/                     # 本地依赖库（如有需要）
 ├── build.gradle                  # 项目构建配置
 ├── settings.gradle
 ├── gradle.properties
@@ -35,21 +35,20 @@ ForceStatusBar/
 
 ## 快速开始
 
-### 1. 添加 Xposed API
-在编译前，需要下载 Xposed API JAR 文件：
+### 1. 配置项目
 
-```bash
-# 创建 libs 目录
-mkdir -p app/libs
+项目已配置好 Xposed Maven 仓库 (`https://api.xposed.info/`)，Gradle 会自动下载依赖。
 
-# 下载 Xposed API（需要 wget 或手动下载）
-wget https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82.jar -O app/libs/api-82.jar
+如需手动配置，确保 `settings.gradle` 包含：
+```gradle
+dependencyResolutionManagement {
+    repositories {
+        google()
+        mavenCentral()
+        maven { url 'https://api.xposed.info/' }  // Xposed 仓库
+    }
+}
 ```
-
-或者手动下载：
-- 访问 https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/
-- 下载 `api-82.jar` 和 `api-82-sources.jar`
-- 放入 `app/libs/` 目录
 
 ### 2. 编译
 使用 Android Studio 或 Gradle 命令行编译：
