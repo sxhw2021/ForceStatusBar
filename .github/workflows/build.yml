@@ -1,0 +1,102 @@
+name: Build LSPosed Module
+
+on:
+  push:
+    branches: [ main, master ]
+    tags:
+      - 'v*'
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Set up JDK 17
+      uses: actions/setup-java@v4
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+        cache: gradle
+
+    - name: Setup Gradle
+      uses: gradle/actions/setup-gradle@v3
+      
+    - name: Download Gradle Wrapper
+      run: |
+        chmod +x download-gradle-wrapper.sh
+        ./download-gradle-wrapper.sh
+      
+    - name: Grant execute permission for gradlew
+      run: chmod +x gradlew
+      
+    - name: Download Xposed API
+      run: |
+        mkdir -p app/libs
+        wget https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82.jar -O app/libs/api-82.jar
+        wget https://repo1.maven.org/maven2/de/robv/android/xposed/api/82/api-82-sources.jar -O app/libs/api-82-sources.jar
+
+    - name: Build with Gradle
+      run: ./gradlew assembleDebug
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: ForceStatusBar-Debug
+        path: app/build/outputs/apk/debug/*.apk
+        retention-days: 30
+
+    - name: Build Release APK
+      if: startsWith(github.ref, 'refs/tags/')
+      run: ./gradlew assembleRelease
+
+    - name: Sign Release APK
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: r0adkll/sign-android-release@v1
+      id: sign_app
+      with:
+        releaseDirectory: app/build/outputs/apk/release
+        signingKeyBase64: ${{ secrets.SIGNING_KEY }}
+        alias: ${{ secrets.ALIAS }}
+        keyStorePassword: ${{ secrets.KEY_STORE_PASSWORD }}
+        keyPassword: ${{ secrets.KEY_PASSWORD }}
+      env:
+        BUILD_TOOLS_VERSION: "34.0.0"
+
+    - name: Upload Release APK to Artifacts
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: actions/upload-artifact@v4
+      with:
+        name: ForceStatusBar-Release
+        path: ${{steps.sign_app.outputs.signedReleaseFile}}
+        retention-days: 30
+
+    - name: Create Release
+      if: startsWith(github.ref, 'refs/tags/')
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          app/build/outputs/apk/debug/*.apk
+          ${{steps.sign_app.outputs.signedReleaseFile}}
+        body: |
+          ## ForceStatusBar 强制显示状态栏模块
+          
+          ### 使用方法
+          1. 安装 APK
+          2. 在 LSPosed 中启用模块
+          3. 选择目标应用
+          4. 重启手机
+          
+          ### 文件说明
+          - `app-debug.apk` - 调试版本（未签名）
+          - `app-release-unsigned-signed.apk` - 发布版本（已签名）
+          
+          ### 注意事项
+          - 需要 Root 和 LSPosed 框架
+          - 选择目标应用的作用域才能生效
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

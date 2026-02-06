@@ -1,0 +1,8 @@
+<resources>
+    <string name="app_name">强制显示状态栏</string>
+    
+    <!-- Xposed 作用域列表 -->
+    <string-array name="xposed_scope">
+        <!-- 这里会自动填充用户选择的应用 -->
+    </string-array>
+</resources>
