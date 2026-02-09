@@ -1,11 +1,10 @@
 package com.example.forcestatusbar.hook;
 
+import android.app.Activity;
 import android.os.Build;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
-
-import java.lang.reflect.Field;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -21,10 +20,11 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         hookWindowMethods(lpparam);
         hookDecorView(lpparam);
+        hookActivityLifecycle(lpparam);
         
         // Android 11+ 使用 WindowInsetsController
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            hookWindowInsetsController(lpparam);
+            hookWindowInsetsControllerImpl(lpparam);
         }
         
         XposedBridge.log(TAG + ": 已初始化 - " + lpparam.packageName);
@@ -200,58 +200,105 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         }
     }
     
-    private void hookWindowInsetsController(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Android 11+ 使用 WindowInsetsController 控制状态栏
+    private void hookActivityLifecycle(XC_LoadPackage.LoadPackageParam lpparam) {
+        // Hook Activity 的 onResume，确保状态栏显示
         try {
-            Class<?> insetsControllerClass = XposedHelpers.findClass(
-                "android.view.WindowInsetsController",
-                lpparam.classLoader
-            );
-            
-            // Hook hide 方法
             XposedHelpers.findAndHookMethod(
-                insetsControllerClass,
-                "hide",
-                int.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        int types = (int) param.args[0];
-                        
-                        // 阻止隐藏状态栏 (Type.statusBars())
-                        int statusBars = 0; // WindowInsets.Type.statusBars()
-                        try {
-                            Class<?> typeClass = XposedHelpers.findClass(
-                                "android.view.WindowInsets$Type",
-                                lpparam.classLoader
-                            );
-                            statusBars = (int) XposedHelpers.callStaticMethod(typeClass, "statusBars");
-                        } catch (Exception ignored) {}
-                        
-                        if (statusBars != 0 && (types & statusBars) != 0) {
-                            types &= ~statusBars;
-                            param.args[0] = types;
-                            XposedBridge.log(TAG + ": 拦截 WindowInsetsController.hide(状态栏) - " + lpparam.packageName);
-                        }
-                    }
-                }
-            );
-            
-            // Hook show 方法，确保在 show 被调用时正常执行
-            XposedHelpers.findAndHookMethod(
-                insetsControllerClass,
-                "show",
-                int.class,
+                Activity.class.getName(),
+                lpparam.classLoader,
+                "onResume",
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        XposedBridge.log(TAG + ": 调用 WindowInsetsController.show - " + lpparam.packageName);
+                        Activity activity = (Activity) param.thisObject;
+                        Window window = activity.getWindow();
+                        
+                        // 清除全屏标志
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+                        
+                        // 强制显示状态栏
+                        window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+                        
+                        // 设置系统 UI 可见性
+                        View decorView = window.getDecorView();
+                        decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+                        
+                        XposedBridge.log(TAG + ": Activity.onResume 强制显示状态栏 - " + lpparam.packageName);
                     }
                 }
             );
-            
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook WindowInsetsController 失败 - " + e.getMessage());
+            XposedBridge.log(TAG + ": Hook Activity.onResume 失败 - " + e.getMessage());
+        }
+        
+        // Hook Activity 的 onCreate，在创建时就设置
+        try {
+            XposedHelpers.findAndHookMethod(
+                Activity.class.getName(),
+                lpparam.classLoader,
+                "onCreate",
+                android.os.Bundle.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Activity activity = (Activity) param.thisObject;
+                        Window window = activity.getWindow();
+                        
+                        // 强制添加 FLAG_FORCE_NOT_FULLSCREEN
+                        window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+                        
+                        XposedBridge.log(TAG + ": Activity.onCreate 设置状态栏标志 - " + lpparam.packageName);
+                    }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Hook Activity.onCreate 失败 - " + e.getMessage());
+        }
+    }
+    
+    private void hookWindowInsetsControllerImpl(XC_LoadPackage.LoadPackageParam lpparam) {
+        // Android 11+ 尝试 Hook WindowInsetsController 的具体实现类
+        String[] implClasses = {
+            "android.view.WindowInsetsControllerImpl",
+            "android.view.InsetsController",
+            "android.view.WindowInsetsController$Impl"
+        };
+        
+        for (String className : implClasses) {
+            try {
+                Class<?> clazz = XposedHelpers.findClassIfExists(className, lpparam.classLoader);
+                if (clazz != null) {
+                    XposedBridge.hookAllMethods(clazz, "hide", new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                            int types = (int) param.args[0];
+                            
+                            // 尝试获取 statusBars 类型
+                            int statusBars = 0;
+                            try {
+                                Class<?> typeClass = XposedHelpers.findClass(
+                                    "android.view.WindowInsets$Type", 
+                                    lpparam.classLoader
+                                );
+                                statusBars = (int) XposedHelpers.callStaticMethod(typeClass, "statusBars");
+                            } catch (Exception ignored) {}
+                            
+                            // 如果尝试隐藏状态栏，阻止它
+                            if (statusBars != 0 && (types & statusBars) != 0) {
+                                types &= ~statusBars;
+                                param.args[0] = types;
+                                XposedBridge.log(TAG + ": 拦截 WindowInsetsControllerImpl.hide(状态栏) - " + lpparam.packageName);
+                            }
+                        }
+                    });
+                    
+                    XposedBridge.log(TAG + ": 成功 Hook WindowInsetsController 实现类 - " + className);
+                    break; // 成功一个就退出
+                }
+            } catch (Exception e) {
+                // 尝试下一个类
+            }
         }
     }
 }
