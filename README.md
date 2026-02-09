@@ -6,8 +6,8 @@
 ## 使用方法
 
 ### 1. 安装模块
-- 将编译好的 APK 安装到手机
-- 确保已安装 LSPosed 或 Xposed 框架
+- 在release下载 APK 安装到手机
+- 确保已安装 LSPosed 框架
 
 ### 2. 激活模块
 1. 打开 LSPosed 管理器
