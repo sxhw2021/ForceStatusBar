@@ -11,7 +11,7 @@ import android.view.Window;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 
-import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -22,78 +22,88 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class StatusBarHook implements IXposedHookLoadPackage {
 
     private static final String TAG = "ForceStatusBar";
-    private static final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private static Handler mainHandler = null;
 
-    private static final long MAX_GUARD_TIME = 5000;
+    private static final long MAX_GUARD_TIME = 8000;
 
-    private static final java.util.Map<Activity, GuardTask> guardedActivities = new java.util.WeakHashMap<>();
+    private static final java.util.Map<View, GuardTask> guardedViews = new java.util.WeakHashMap<>();
 
     private class GuardTask implements Runnable {
-        private final Activity activity;
+        private final View view;
         private final long startTime;
-        private long lastRun;
         private volatile boolean stopped = false;
 
-        GuardTask(Activity activity) {
-            this.activity = activity;
+        GuardTask(View view) {
+            this.view = view;
             this.startTime = System.currentTimeMillis();
-            this.lastRun = 0;
         }
 
         @Override
         public void run() {
-            if (stopped || activity == null || activity.isFinishing() || activity.isDestroyed()) {
-                StatusBarHook.this.stopGuarding(activity);
+            if (stopped || view == null) {
+                stopGuarding(view);
                 return;
             }
 
             if (System.currentTimeMillis() - startTime > MAX_GUARD_TIME) {
-                StatusBarHook.this.stopGuarding(activity);
+                stopGuarding(view);
                 return;
             }
 
-            StatusBarHook.this.forceShowStatusBar(activity);
-
-            long interval = 100;
-            if (System.currentTimeMillis() - lastRun < 200) {
-                interval = 200;
+            try {
+                Activity activity = getActivityFromView(view);
+                if (activity != null && !activity.isFinishing() && !activity.isDestroyed()) {
+                    forceShowStatusBar(activity);
+                } else {
+                    stopGuarding(view);
+                    return;
+                }
+            } catch (Throwable ignored) {
+                stopGuarding(view);
+                return;
             }
-            lastRun = System.currentTimeMillis();
 
-            if (!stopped) {
-                mainHandler.postDelayed(this, interval);
+            if (!stopped && mainHandler != null) {
+                mainHandler.postDelayed(this, 150);
             }
         }
 
         public void stop() {
             stopped = true;
-            mainHandler.removeCallbacks(this);
+            if (mainHandler != null) {
+                mainHandler.removeCallbacks(this);
+            }
         }
+    }
+
+    private synchronized Handler getMainHandler() {
+        if (mainHandler == null) {
+            try {
+                mainHandler = new Handler(Looper.getMainLooper());
+            } catch (Throwable t) {
+                XposedBridge.log(TAG + ": Handler创建失败: " + t.getMessage());
+            }
+        }
+        return mainHandler;
     }
 
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        XposedBridge.log(TAG + ": 开始 Hook - " + lpparam.packageName);
+        XposedBridge.log(TAG + ": 开始 Hook " + lpparam.packageName);
 
-        hookSystemActivity(lpparam);
-        hookSystemWindow(lpparam);
-        hookSurfaceView(lpparam);
+        getMainHandler();
 
-        XposedBridge.log(TAG + ": 已初始化 - " + lpparam.packageName);
-    }
-
-    private void hookSystemActivity(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             XposedHelpers.findAndHookMethod(Activity.class, "onResume", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     Activity activity = (Activity) param.thisObject;
-                    startGuard(activity);
+                    XposedBridge.log(TAG + ": onResume " + activity.getClass().getSimpleName());
+                    startGuardForActivity(activity);
                 }
             });
-            XposedBridge.log(TAG + ": Hook Activity.onResume 成功");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Hook Activity.onResume 失败 - " + t.getMessage());
+            XposedBridge.log(TAG + ": Hook onResume 失败: " + t.getMessage());
         }
 
         try {
@@ -102,35 +112,30 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     if ((boolean) param.args[0]) {
                         Activity activity = (Activity) param.thisObject;
-                        startGuard(activity);
+                        XposedBridge.log(TAG + ": focus " + activity.getClass().getSimpleName());
+                        startGuardForActivity(activity);
                     }
                 }
             });
-            XposedBridge.log(TAG + ": Hook Activity.onWindowFocusChanged 成功");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Hook Activity.onWindowFocusChanged 失败 - " + t.getMessage());
+            XposedBridge.log(TAG + ": Hook onWindowFocusChanged 失败: " + t.getMessage());
         }
-    }
 
-    private void hookSystemWindow(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             XposedHelpers.findAndHookMethod(Window.class, "setFlags", int.class, int.class, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                     int flags = (int) param.args[0];
                     int mask = (int) param.args[1];
-
                     if ((mask & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
                         flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
                         param.args[0] = flags;
                         XposedBridge.log(TAG + ": 拦截 setFlags FLAG_FULLSCREEN");
-                        forceShowStatusBarFromWindow(param);
                     }
                 }
             });
-            XposedBridge.log(TAG + ": Hook Window.setFlags 成功");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Hook Window.setFlags 失败 - " + t.getMessage());
+            XposedBridge.log(TAG + ": Hook setFlags 失败: " + t.getMessage());
         }
 
         try {
@@ -142,13 +147,11 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
                         param.args[0] = flags;
                         XposedBridge.log(TAG + ": 拦截 addFlags FLAG_FULLSCREEN");
-                        forceShowStatusBarFromWindow(param);
                     }
                 }
             });
-            XposedBridge.log(TAG + ": Hook Window.addFlags 成功");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Hook Window.addFlags 失败 - " + t.getMessage());
+            XposedBridge.log(TAG + ": Hook addFlags 失败: " + t.getMessage());
         }
 
         try {
@@ -178,27 +181,21 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     }
                 }
             });
-            XposedBridge.log(TAG + ": Hook View.setSystemUiVisibility 成功");
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Hook View.setSystemUiVisibility 失败 - " + t.getMessage());
+            XposedBridge.log(TAG + ": Hook setSystemUiVisibility 失败: " + t.getMessage());
         }
-    }
 
-    private void hookSurfaceView(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             XposedHelpers.findAndHookMethod(SurfaceView.class.getName(), lpparam.classLoader, "onAttachedToWindow", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     View view = (View) param.thisObject;
-                    Activity activity = getActivityFromView(view);
-                    if (activity != null) {
-                        XposedBridge.log(TAG + ": SurfaceView attached - " + activity.getClass().getSimpleName());
-                        startGuard(activity);
-                    }
+                    XposedBridge.log(TAG + ": SurfaceView attached");
+                    startGuardForView(view);
                 }
             });
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Hook SurfaceView 失败 - " + t.getMessage());
+            XposedBridge.log(TAG + ": Hook SurfaceView 失败: " + t.getMessage());
         }
 
         try {
@@ -206,26 +203,52 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                     View view = (View) param.thisObject;
-                    Activity activity = getActivityFromView(view);
-                    if (activity != null) {
-                        XposedBridge.log(TAG + ": TextureView attached - " + activity.getClass().getSimpleName());
-                        startGuard(activity);
-                    }
+                    XposedBridge.log(TAG + ": TextureView attached");
+                    startGuardForView(view);
                 }
             });
         } catch (Throwable t) {
-            XposedBridge.log(TAG + ": Hook TextureView 失败 - " + t.getMessage());
+            XposedBridge.log(TAG + ": Hook TextureView 失败: " + t.getMessage());
+        }
+
+        XposedBridge.log(TAG + ": 已初始化 " + lpparam.packageName);
+    }
+
+    private void startGuardForActivity(Activity activity) {
+        if (activity == null || activity.isFinishing()) return;
+
+        try {
+            Window window = activity.getWindow();
+            if (window != null) {
+                View decorView = window.getDecorView();
+                if (decorView != null) {
+                    startGuardForView(decorView);
+                }
+            }
+        } catch (Throwable ignored) {
         }
     }
 
-    private void forceShowStatusBarFromWindow(XC_MethodHook.MethodHookParam param) {
-        try {
-            Window window = (Window) param.thisObject;
-            Activity activity = (Activity) window.getContext();
-            if (activity != null) {
-                startGuard(activity);
-            }
-        } catch (Throwable ignored) {
+    private synchronized void startGuardForView(View view) {
+        if (view == null) return;
+
+        GuardTask existingTask = guardedViews.get(view);
+        if (existingTask != null) {
+            existingTask.stop();
+        }
+
+        GuardTask task = new GuardTask(view);
+        guardedViews.put(view, task);
+        Handler handler = getMainHandler();
+        if (handler != null) {
+            handler.post(task);
+        }
+    }
+
+    private synchronized void stopGuarding(View view) {
+        GuardTask task = guardedViews.remove(view);
+        if (task != null) {
+            task.stop();
         }
     }
 
@@ -239,33 +262,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         return null;
     }
 
-    private synchronized void startGuard(Activity activity) {
-        if (activity == null || activity.isFinishing()) return;
-
-        String activityName = activity.getClass().getSimpleName();
-        XposedBridge.log(TAG + ": 启动守护 - " + activityName);
-
-        GuardTask existingTask = guardedActivities.get(activity);
-        if (existingTask != null) {
-            existingTask.stop();
-        }
-
-        GuardTask task = new GuardTask(activity);
-        guardedActivities.put(activity, task);
-        mainHandler.post(task);
-    }
-
-    private synchronized void stopGuarding(Activity activity) {
-        GuardTask task = guardedActivities.remove(activity);
-        if (task != null) {
-            task.stop();
-            XposedBridge.log(TAG + ": 停止守护 - " + activity.getClass().getSimpleName());
-        }
-    }
-
     private void forceShowStatusBar(Activity activity) {
         if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
-            stopGuarding(activity);
             return;
         }
 
