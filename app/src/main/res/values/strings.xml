@@ -1,8 +1,9 @@
 <resources>
     <string name="app_name">强制显示状态栏</string>
     
-    <!-- Xposed 作用域列表 -->
+    <!-- Xposed 作用域列表 - 推荐同时选择系统框架和目标应用 -->
     <string-array name="xposed_scope">
-        <!-- 这里会自动填充用户选择的应用 -->
+        <item>android</item>
+        <item>com.android.systemui</item>
     </string-array>
 </resources>
