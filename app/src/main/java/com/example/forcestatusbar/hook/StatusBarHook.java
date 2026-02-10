@@ -7,12 +7,9 @@ import android.os.Looper;
 import android.view.SurfaceView;
 import android.view.TextureView;
 import android.view.View;
-import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 
-import java.util.HashSet;
-import java.util.Set;
 import java.util.WeakHashMap;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -156,90 +153,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             }
         }
     }
-        // Hook Window.setFlags
-        try {
-            XposedHelpers.findAndHookMethod(
-                Window.class.getName(),
-                lpparam.classLoader,
-                "setFlags",
-                int.class,
-                int.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        int flags = (int) param.args[0];
-                        int mask = (int) param.args[1];
-                        
-                        if ((mask & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
-                            flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
-                            param.args[0] = flags;
-                            XposedBridge.log(TAG + ": 拦截 setFlags FLAG_FULLSCREEN");
-                        }
-                    }
-                }
-            );
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook setFlags 失败");
-        }
-        
-        // Hook Window.addFlags
-        try {
-            XposedHelpers.findAndHookMethod(
-                Window.class.getName(),
-                lpparam.classLoader,
-                "addFlags",
-                int.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        int flags = (int) param.args[0];
-                        if ((flags & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
-                            flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
-                            param.args[0] = flags;
-                            XposedBridge.log(TAG + ": 拦截 addFlags FLAG_FULLSCREEN");
-                        }
-                    }
-                }
-            );
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook addFlags 失败");
-        }
-        
-        // Hook View.setSystemUiVisibility
-        try {
-            XposedHelpers.findAndHookMethod(
-                View.class.getName(),
-                lpparam.classLoader,
-                "setSystemUiVisibility",
-                int.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        int visibility = (int) param.args[0];
-                        int original = visibility;
-                        
-                        // 只移除隐藏状态栏的标志
-                        visibility &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
-                        visibility &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-                        visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE;
-                        visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-                        
-                        // 确保基本标志
-                        visibility |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                        visibility |= View.SYSTEM_UI_FLAG_VISIBLE;
-                        
-                        if (visibility != original) {
-                            param.args[0] = visibility;
-                            XposedBridge.log(TAG + ": 拦截 SystemUiVisibility 0x" + Integer.toHexString(original));
-                        }
-                    }
-                }
-            );
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook setSystemUiVisibility 失败");
-        }
-    }
-    
+
     private void hookViewCreation(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
             XposedHelpers.findAndHookMethod(
