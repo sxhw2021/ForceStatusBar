@@ -10,7 +10,9 @@ import android.view.ViewGroup;
 import android.view.ViewTreeObserver;
 import android.view.Window;
 import android.view.WindowManager;
-import android.widget.FrameLayout;
+
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -21,7 +23,6 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class StatusBarHook implements IXposedHookLoadPackage {
     
     private static final String TAG = "ForceStatusBar";
-    private static final int MAX_RETRY_COUNT = 5;
     
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -60,7 +61,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             modified = true;
                         }
                         
-                        // 移除 FLAG_LAYOUT_NO_LIMITS（某些游戏也会使用这个）
+                        // 移除 FLAG_LAYOUT_NO_LIMITS
                         if ((mask & WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) != 0) {
                             flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
                             modified = true;
@@ -89,7 +90,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         int flags = (int) param.args[0];
                         
-                        // 如果添加 FLAG_FULLSCREEN，则阻止
                         if ((flags & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
                             flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
                             param.args[0] = flags;
@@ -101,47 +101,77 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Hook addFlags 失败 - " + e.getMessage());
         }
+        
+        // Hook setAttributes 方法
+        try {
+            XposedHelpers.findAndHookMethod(
+                Window.class.getName(),
+                lpparam.classLoader,
+                "setAttributes",
+                WindowManager.LayoutParams.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        WindowManager.LayoutParams attrs = (WindowManager.LayoutParams) param.args[0];
+                        if (attrs != null) {
+                            // 移除全屏标志
+                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
+                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                            
+                            // 强制添加 FLAG_FORCE_NOT_FULLSCREEN
+                            attrs.flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
+                            
+                            XposedBridge.log(TAG + ": 拦截 setAttributes - " + lpparam.packageName);
+                        }
+                    }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Hook setAttributes 失败 - " + e.getMessage());
+        }
     }
     
     private void hookDecorView(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Hook DecorView 的 setSystemUiVisibility (Android 10 及以下)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            try {
-                XposedHelpers.findAndHookMethod(
-                    View.class.getName(),
-                    lpparam.classLoader,
-                    "setSystemUiVisibility",
-                    int.class,
-                    new XC_MethodHook() {
-                        @Override
-                        protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                            int visibility = (int) param.args[0];
-                            
-                            // 保留 LAYOUT_FULLSCREEN 标志，让内容延伸到状态栏下方
-                            // 但移除其他全屏相关的 flag
-                            int oldVisibility = visibility;
-                            visibility &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-                            visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE;
-                            visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
-                            
-                            // 添加 LAYOUT_STABLE 保持布局稳定
-                            visibility |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                            
-                            if (visibility != oldVisibility) {
-                                param.args[0] = visibility;
-                                XposedBridge.log(TAG + ": 拦截 setSystemUiVisibility - " + lpparam.packageName);
-                            }
+        // Hook DecorView 的 setSystemUiVisibility
+        try {
+            XposedHelpers.findAndHookMethod(
+                View.class.getName(),
+                lpparam.classLoader,
+                "setSystemUiVisibility",
+                int.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        int visibility = (int) param.args[0];
+                        
+                        // 关键：保留 LAYOUT_FULLSCREEN 标志
+                        // 这样游戏会认为它是全屏的，状态栏只是覆盖在上面
+                        int oldVisibility = visibility;
+                        
+                        // 只移除真正隐藏状态栏的标志
+                        visibility &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                        visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE;
+                        visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                        visibility &= ~View.SYSTEM_UI_FLAG_FULLSCREEN; // 移除这个让系统处理
+                        
+                        // 确保布局稳定
+                        visibility |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                        visibility |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                        
+                        if (visibility != oldVisibility) {
+                            param.args[0] = visibility;
+                            XposedBridge.log(TAG + ": 拦截 setSystemUiVisibility - " + lpparam.packageName);
                         }
                     }
-                );
-            } catch (Exception e) {
-                XposedBridge.log(TAG + ": Hook setSystemUiVisibility 失败 - " + e.getMessage());
-            }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Hook setSystemUiVisibility 失败 - " + e.getMessage());
         }
     }
     
     private void hookActivityLifecycle(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Hook Activity 的 onResume，确保状态栏显示并避免遮挡
+        // Hook Activity 的 onResume
         try {
             XposedHelpers.findAndHookMethod(
                 Activity.class.getName(),
@@ -151,18 +181,12 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         final Activity activity = (Activity) param.thisObject;
-                        final Window window = activity.getWindow();
-                        final View decorView = window.getDecorView();
-                        
-                        // 清除全屏标志
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
                         
                         // 延迟执行，确保窗口已准备好
-                        decorView.post(new Runnable() {
+                        activity.getWindow().getDecorView().post(new Runnable() {
                             @Override
                             public void run() {
-                                applyStatusBarFix(activity);
+                                applyStatusBarOverlay(activity);
                             }
                         });
                         
@@ -174,7 +198,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": Hook Activity.onResume 失败 - " + e.getMessage());
         }
         
-        // Hook Activity 的 onWindowFocusChanged
+        // Hook onWindowFocusChanged
         try {
             XposedHelpers.findAndHookMethod(
                 Activity.class.getName(),
@@ -190,7 +214,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             activity.getWindow().getDecorView().postDelayed(new Runnable() {
                                 @Override
                                 public void run() {
-                                    applyStatusBarFix(activity);
+                                    applyStatusBarOverlay(activity);
                                 }
                             }, 100);
                         }
@@ -202,23 +226,31 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         }
     }
     
-    private void applyStatusBarFix(Activity activity) {
+    private void applyStatusBarOverlay(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
             // 清除全屏标志
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             
-            // 设置系统 UI 可见性
+            // 强制状态栏显示（但不改变窗口大小）
+            window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+            
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 // Android 11+: 使用新的 API
-                // 让内容延伸到状态栏下方，状态栏半透明覆盖
+                // 关键：setDecorFitsSystemWindows(false) 让内容延伸到状态栏下方
                 window.setDecorFitsSystemWindows(false);
                 
                 // 显示状态栏
                 if (window.getInsetsController() != null) {
                     window.getInsetsController().show(android.view.WindowInsets.Type.statusBars());
+                    
+                    // 设置状态栏样式为半透明
+                    try {
+                        window.setStatusBarColor(0x66000000); // 半透明黑色
+                    } catch (Exception ignored) {}
                 }
             } else {
                 // Android 10 及以下
@@ -228,121 +260,10 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 decorView.setSystemUiVisibility(uiFlags);
             }
             
-            // 使用 ViewTreeObserver 监听布局变化
-            applyInsetsToGameViews(decorView);
-            
-            XposedBridge.log(TAG + ": 应用状态栏修复 - " + activity.getPackageName());
+            XposedBridge.log(TAG + ": 应用状态栏覆盖 - " + activity.getPackageName());
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": 应用状态栏修复失败 - " + e.getMessage());
+            XposedBridge.log(TAG + ": 应用状态栏覆盖失败 - " + e.getMessage());
         }
-    }
-    
-    private void applyInsetsToGameViews(final View root) {
-        try {
-            root.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-                @Override
-                public void onGlobalLayout() {
-                    // 移除监听（避免重复）
-                    root.getViewTreeObserver().removeOnGlobalLayoutListener(this);
-                    
-                    // 获取状态栏高度
-                    final int statusBarHeight = getStatusBarHeight(root.getContext());
-                    
-                    // 延迟调整视图
-                    root.postDelayed(new Runnable() {
-                        @Override
-                        public void run() {
-                            // 找到游戏主视图并调整
-                            View gameView = findMainGameView(root);
-                            if (gameView != null) {
-                                adjustGameViewWithRetry(gameView, statusBarHeight, 0);
-                            }
-                        }
-                    }, 200);
-                }
-            });
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": 应用 insets 失败 - " + e.getMessage());
-        }
-    }
-    
-    private void adjustGameViewWithRetry(final View view, final int statusBarHeight, final int retryCount) {
-        if (retryCount >= MAX_RETRY_COUNT) return;
-        
-        view.postDelayed(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    // 尝试调整视图的 padding
-                    if (view.getPaddingTop() < statusBarHeight) {
-                        view.setPadding(0, statusBarHeight, 0, 0);
-                        XposedBridge.log(TAG + ": 调整视图 padding - " + statusBarHeight + "px");
-                    }
-                    
-                    // 如果是 ViewGroup，递归调整子视图
-                    if (view instanceof ViewGroup) {
-                        ViewGroup viewGroup = (ViewGroup) view;
-                        for (int i = 0; i < viewGroup.getChildCount(); i++) {
-                            View child = viewGroup.getChildAt(i);
-                            if (child instanceof SurfaceView || child instanceof TextureView) {
-                                if (child.getPaddingTop() < statusBarHeight) {
-                                    child.setPadding(0, statusBarHeight, 0, 0);
-                                }
-                            }
-                        }
-                    }
-                } catch (Exception e) {
-                    // 重试
-                    if (retryCount < MAX_RETRY_COUNT - 1) {
-                        adjustGameViewWithRetry(view, statusBarHeight, retryCount + 1);
-                    }
-                }
-            }
-        }, 100L * (retryCount + 1));
-    }
-    
-    private View findMainGameView(View view) {
-        try {
-            // 优先查找 SurfaceView 和 TextureView
-            if (view instanceof SurfaceView || view instanceof TextureView) {
-                return view;
-            }
-            
-            // 检查是否是游戏引擎视图
-            String className = view.getClass().getName();
-            if (className.contains("UnityPlayer") || 
-                className.contains("GLSurfaceView") ||
-                className.contains("Cocos2dx") ||
-                className.contains("Godot")) {
-                return view;
-            }
-            
-            // 递归查找子视图
-            if (view instanceof ViewGroup) {
-                ViewGroup viewGroup = (ViewGroup) view;
-                for (int i = 0; i < viewGroup.getChildCount(); i++) {
-                    View result = findMainGameView(viewGroup.getChildAt(i));
-                    if (result != null) return result;
-                }
-            }
-        } catch (Exception e) {
-            // 忽略错误
-        }
-        return null;
-    }
-    
-    private int getStatusBarHeight(Context context) {
-        int result = 0;
-        try {
-            int resourceId = context.getResources().getIdentifier("status_bar_height", "dimen", "android");
-            if (resourceId > 0) {
-                result = context.getResources().getDimensionPixelSize(resourceId);
-            }
-        } catch (Exception e) {
-            // 使用默认值（约 24dp）
-            result = (int) (24 * context.getResources().getDisplayMetrics().density);
-        }
-        return result;
     }
     
     private void hookWindowInsetsControllerImpl(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -376,13 +297,13 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             if (statusBars != 0 && (types & statusBars) != 0) {
                                 types &= ~statusBars;
                                 param.args[0] = types;
-                                XposedBridge.log(TAG + ": 拦截 WindowInsetsControllerImpl.hide(状态栏)");
+                                XposedBridge.log(TAG + ": 拦截 WindowInsetsControllerImpl.hide");
                             }
                         }
                     });
                     
-                    XposedBridge.log(TAG + ": 成功 Hook WindowInsetsController 实现类 - " + className);
-                    break; // 成功一个就退出
+                    XposedBridge.log(TAG + ": 成功 Hook WindowInsetsController - " + className);
+                    break;
                 }
             } catch (Exception e) {
                 // 尝试下一个类
