@@ -201,7 +201,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     private void hookActivityLifecycle(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Hook Activity 的 onResume，确保状态栏显示
+        // Hook Activity 的 onResume，确保状态栏显示并避免遮挡
         try {
             XposedHelpers.findAndHookMethod(
                 Activity.class.getName(),
@@ -220,11 +220,31 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         // 强制显示状态栏
                         window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                         
-                        // 设置系统 UI 可见性
-                        View decorView = window.getDecorView();
-                        decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+                        // 避免状态栏遮挡应用内容
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                            // Android 11+：使用 WindowInsetsController
+                            try {
+                                window.setDecorFitsSystemWindows(true);
+                            } catch (Exception e) {
+                                // 忽略错误
+                            }
+                        } else {
+                            // Android 10 及以下：使用 SYSTEM_UI_FLAG 和 fitsSystemWindows
+                            View decorView = window.getDecorView();
+                            int uiFlags = View.SYSTEM_UI_FLAG_VISIBLE | 
+                                         View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                            decorView.setSystemUiVisibility(uiFlags);
+                            
+                            // 尝试设置 fitsSystemWindows
+                            try {
+                                View contentView = window.findViewById(android.R.id.content);
+                                if (contentView != null) {
+                                    contentView.setFitsSystemWindows(true);
+                                }
+                            } catch (Exception ignored) {}
+                        }
                         
-                        XposedBridge.log(TAG + ": Activity.onResume 强制显示状态栏 - " + lpparam.packageName);
+                        XposedBridge.log(TAG + ": Activity.onResume 强制显示状态栏并避免遮挡 - " + lpparam.packageName);
                     }
                 }
             );
