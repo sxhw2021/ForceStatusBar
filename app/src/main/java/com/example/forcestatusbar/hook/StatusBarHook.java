@@ -8,265 +8,267 @@ import android.view.WindowManager;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XC_MethodReplacement;
 import de.robv.android.xposed.XposedBridge;
 import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * 强制显示状态栏模块 - 系统级欺骗方案
+ * 强制显示状态栏模块 - 简单可靠方案
  * 
- * 核心思路：欺骗应用让它以为自己处于全屏模式（这样游戏使用全屏坐标系），
- * 但在系统层面强制显示状态栏。
+ * 核心思路：
+ * 1. 清除 FLAG_FULLSCREEN - 让系统显示状态栏
+ * 2. 设置 SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN - 让内容延伸到状态栏下方（不遮挡）
+ * 3. 不做任何视图位置调整 - 避免触摸偏移
  */
 public class StatusBarHook implements IXposedHookLoadPackage {
     
     private static final String TAG = "ForceStatusBar";
-    private static final String SYSTEMUI_PACKAGE = "com.android.systemui";
     
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
-        String packageName = lpparam.packageName;
+        hookWindowFlags(lpparam);
+        hookSystemUiVisibility(lpparam);
+        hookActivityLifecycle(lpparam);
         
-        // 1. Hook 系统框架 - 核心逻辑
-        if (packageName.equals("android")) {
-            hookSystemFramework(lpparam);
-            return;
-        }
-        
-        // 2. Hook SystemUI - 强制显示状态栏
-        if (packageName.equals(SYSTEMUI_PACKAGE)) {
-            hookSystemUI(lpparam);
-            return;
-        }
-        
-        // 3. Hook 目标应用 - 欺骗应用让它以为全屏
-        hookTargetApp(lpparam);
+        XposedBridge.log(TAG + ": 已初始化 - " + lpparam.packageName);
     }
     
     /**
-     * Hook 系统框架 - 欺骗窗口管理器
+     * Hook Window 的标志设置
      */
-    private void hookSystemFramework(XC_LoadPackage.LoadPackageParam lpparam) {
+    private void hookWindowFlags(XC_LoadPackage.LoadPackageParam lpparam) {
+        // Hook setFlags
         try {
-            // Hook WindowManagerService 的 setAppFullscreen
-            Class<?> windowManagerServiceClass = XposedHelpers.findClass(
-                "com.android.server.wm.WindowManagerService",
-                lpparam.classLoader
-            );
-            
-            // Hook 设置全屏状态的方法
             XposedHelpers.findAndHookMethod(
-                windowManagerServiceClass,
-                "setAppFullscreen",
+                Window.class.getName(),
+                lpparam.classLoader,
+                "setFlags",
+                int.class,
+                int.class,
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        // 阻止系统设置全屏状态
-                        // 应用会收到全屏回调，但系统不会真正隐藏状态栏
-                        XposedBridge.log(TAG + ": 拦截系统设置全屏");
-                    }
-                }
-            );
-            
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook WindowManagerService 失败 - " + e.getMessage());
-        }
-        
-        try {
-            // Hook WindowState 的 isFullscreen 方法
-            // 让系统认为窗口是全屏的（这样游戏使用全屏布局）
-            Class<?> windowStateClass = XposedHelpers.findClass(
-                "com.android.server.wm.WindowState",
-                lpparam.classLoader
-            );
-            
-            XposedHelpers.findAndHookMethod(
-                windowStateClass,
-                "isFullscreen",
-                new XC_MethodReplacement() {
-                    @Override
-                    protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
-                        // 欺骗系统：返回 true 表示是全屏
-                        // 这样游戏认为自己全屏，使用全屏坐标系
-                        return true;
-                    }
-                }
-            );
-            
-            XposedBridge.log(TAG + ": Hook WindowState.isFullscreen 成功");
-            
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook WindowState 失败 - " + e.getMessage());
-        }
-        
-        try {
-            // Hook DisplayPolicy - 控制状态栏显示策略
-            Class<?> displayPolicyClass = XposedHelpers.findClass(
-                "com.android.server.wm.DisplayPolicy",
-                lpparam.classLoader
-            );
-            
-            // Hook 更新系统 UI 的方法
-            XposedHelpers.findAndHookMethod(
-                displayPolicyClass,
-                "updateSystemUiVisibilityLw",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // 强制显示状态栏
-                        Object mStatusBar = XposedHelpers.getObjectField(param.thisObject, "mStatusBar");
-                        if (mStatusBar != null) {
-                            XposedHelpers.callMethod(mStatusBar, "show", new Object[]{});
+                        int flags = (int) param.args[0];
+                        int mask = (int) param.args[1];
+                        
+                        // 如果尝试设置 FLAG_FULLSCREEN，移除它
+                        if ((mask & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
+                            if ((flags & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
+                                flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
+                                param.args[0] = flags;
+                                XposedBridge.log(TAG + ": 拦截 setFlags FLAG_FULLSCREEN");
+                            }
                         }
                     }
                 }
             );
-            
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook DisplayPolicy 失败 - " + e.getMessage());
+            XposedBridge.log(TAG + ": Hook setFlags 失败 - " + e.getMessage());
+        }
+        
+        // Hook addFlags
+        try {
+            XposedHelpers.findAndHookMethod(
+                Window.class.getName(),
+                lpparam.classLoader,
+                "addFlags",
+                int.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        int flags = (int) param.args[0];
+                        
+                        // 阻止添加 FLAG_FULLSCREEN
+                        if ((flags & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
+                            flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
+                            param.args[0] = flags;
+                            XposedBridge.log(TAG + ": 拦截 addFlags FLAG_FULLSCREEN");
+                        }
+                    }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Hook addFlags 失败 - " + e.getMessage());
+        }
+        
+        // Hook setAttributes
+        try {
+            XposedHelpers.findAndHookMethod(
+                Window.class.getName(),
+                lpparam.classLoader,
+                "setAttributes",
+                WindowManager.LayoutParams.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                        WindowManager.LayoutParams attrs = (WindowManager.LayoutParams) param.args[0];
+                        if (attrs != null) {
+                            // 移除全屏标志
+                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
+                            // 强制非全屏
+                            attrs.flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
+                            XposedBridge.log(TAG + ": 拦截 setAttributes");
+                        }
+                    }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Hook setAttributes 失败 - " + e.getMessage());
         }
     }
     
     /**
-     * Hook SystemUI - 强制状态栏显示
+     * Hook System UI 可见性
      */
-    private void hookSystemUI(XC_LoadPackage.LoadPackageParam lpparam) {
+    private void hookSystemUiVisibility(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
-            // Hook StatusBar 的 hide 方法
-            Class<?> statusBarClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.StatusBar",
-                lpparam.classLoader
-            );
-            
             XposedHelpers.findAndHookMethod(
-                statusBarClass,
-                "hide",
-                new XC_MethodReplacement() {
-                    @Override
-                    protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
-                        // 直接返回，不执行隐藏
-                        XposedBridge.log(TAG + ": 阻止隐藏状态栏");
-                        return null;
-                    }
-                }
-            );
-            
-            // Hook makeExpandedInvisible 方法
-            XposedHelpers.findAndHookMethod(
-                statusBarClass,
-                "makeExpandedInvisible",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // 确保状态栏保持显示
-                        Object statusBar = param.thisObject;
-                        XposedHelpers.callMethod(statusBar, "show", new Object[]{});
-                    }
-                }
-            );
-            
-            XposedBridge.log(TAG + ": Hook SystemUI 成功");
-            
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook SystemUI 失败 - " + e.getMessage());
-        }
-        
-        try {
-            // Hook PhoneStatusBarView
-            Class<?> phoneStatusBarViewClass = XposedHelpers.findClass(
-                "com.android.systemui.statusbar.phone.PhoneStatusBarView",
-                lpparam.classLoader
-            );
-            
-            XposedHelpers.findAndHookMethod(
-                phoneStatusBarViewClass,
-                "setVisibility",
+                View.class.getName(),
+                lpparam.classLoader,
+                "setSystemUiVisibility",
                 int.class,
                 new XC_MethodHook() {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         int visibility = (int) param.args[0];
-                        if (visibility == View.GONE || visibility == View.INVISIBLE) {
-                            // 强制改为 VISIBLE
-                            param.args[0] = View.VISIBLE;
-                            XposedBridge.log(TAG + ": 强制状态栏可见");
+                        int oldVisibility = visibility;
+                        
+                        // 移除隐藏状态栏的标志
+                        visibility &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
+                        visibility &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                        visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE;
+                        visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+                        
+                        // 添加布局全屏标志（内容延伸到状态栏下方）
+                        visibility |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                        visibility |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                        
+                        if (visibility != oldVisibility) {
+                            param.args[0] = visibility;
+                            XposedBridge.log(TAG + ": 调整 SystemUiVisibility - 0x" + Integer.toHexString(oldVisibility) + " -> 0x" + Integer.toHexString(visibility));
                         }
                     }
                 }
             );
-            
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook PhoneStatusBarView 失败 - " + e.getMessage());
+            XposedBridge.log(TAG + ": Hook setSystemUiVisibility 失败 - " + e.getMessage());
         }
     }
     
     /**
-     * Hook 目标应用 - 欺骗应用让它以为自己全屏
+     * Hook Activity 生命周期
      */
-    private void hookTargetApp(XC_LoadPackage.LoadPackageParam lpparam) {
-        // Hook Activity 的 isInMultiWindowMode（某些游戏用这个判断）
+    private void hookActivityLifecycle(XC_LoadPackage.LoadPackageParam lpparam) {
+        // Hook onCreate
         try {
             XposedHelpers.findAndHookMethod(
                 Activity.class.getName(),
                 lpparam.classLoader,
-                "isInMultiWindowMode",
-                new XC_MethodReplacement() {
+                "onCreate",
+                android.os.Bundle.class,
+                new XC_MethodHook() {
                     @Override
-                    protected Object replaceHookedMethod(MethodHookParam param) throws Throwable {
-                        // 返回 false，让游戏认为不在多窗口模式
-                        return false;
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Activity activity = (Activity) param.thisObject;
+                        Window window = activity.getWindow();
+                        
+                        // 清除全屏标志
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+                        
+                        // 强制非全屏
+                        window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+                        
+                        XposedBridge.log(TAG + ": Activity.onCreate - " + activity.getPackageName());
                     }
                 }
             );
         } catch (Exception e) {
-            // 忽略
+            XposedBridge.log(TAG + ": Hook onCreate 失败 - " + e.getMessage());
         }
         
-        // Hook WindowManager 的相关方法
+        // Hook onResume - 关键：在这里设置 System UI
         try {
             XposedHelpers.findAndHookMethod(
-                Window.class.getName(),
+                Activity.class.getName(),
                 lpparam.classLoader,
-                "getAttributes",
+                "onResume",
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        WindowManager.LayoutParams attrs = (WindowManager.LayoutParams) param.getResult();
-                        if (attrs != null) {
-                            // 移除全屏标志，这样系统会显示状态栏
-                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
-                            attrs.flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
+                        final Activity activity = (Activity) param.thisObject;
+                        final Window window = activity.getWindow();
+                        final View decorView = window.getDecorView();
+                        
+                        // 延迟执行，确保 Activity 完全恢复
+                        decorView.post(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    // 清除全屏标志
+                                    window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                                    window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+                                    
+                                    // 强制非全屏
+                                    window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+                                    
+                                    // 关键：设置 System UI Flags
+                                    // LAYOUT_FULLSCREEN - 让内容延伸到状态栏下方
+                                    // LAYOUT_STABLE - 保持布局稳定
+                                    int uiFlags = View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                                                 View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                                                 View.SYSTEM_UI_FLAG_VISIBLE;
+                                    
+                                    decorView.setSystemUiVisibility(uiFlags);
+                                    
+                                    // Android 11+ 使用新的 API
+                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                                        // 让内容延伸到状态栏下方
+                                        window.setDecorFitsSystemWindows(false);
+                                        
+                                        // 显示状态栏
+                                        if (window.getInsetsController() != null) {
+                                            window.getInsetsController().show(android.view.WindowInsets.Type.statusBars());
+                                        }
+                                    }
+                                    
+                                    XposedBridge.log(TAG + ": 应用状态栏设置 - " + activity.getPackageName());
+                                } catch (Exception e) {
+                                    XposedBridge.log(TAG + ": 设置状态栏失败 - " + e.getMessage());
+                                }
+                            }
+                        });
+                    }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Hook onResume 失败 - " + e.getMessage());
+        }
+        
+        // Hook onWindowFocusChanged
+        try {
+            XposedHelpers.findAndHookMethod(
+                Activity.class.getName(),
+                lpparam.classLoader,
+                "onWindowFocusChanged",
+                boolean.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        boolean hasFocus = (boolean) param.args[0];
+                        if (hasFocus) {
+                            final Activity activity = (Activity) param.thisObject;
+                            final Window window = activity.getWindow();
+                            
+                            // 再次确保标志正确
+                            window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+                            window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                         }
                     }
                 }
             );
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook Window.getAttributes 失败 - " + e.getMessage());
+            XposedBridge.log(TAG + ": Hook onWindowFocusChanged 失败 - " + e.getMessage());
         }
-        
-        // Hook 系统 UI 可见性查询
-        try {
-            XposedHelpers.findAndHookMethod(
-                View.class.getName(),
-                lpparam.classLoader,
-                "getSystemUiVisibility",
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        int visibility = (int) param.getResult();
-                        // 移除全屏标志
-                        visibility &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
-                        visibility &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
-                        visibility |= View.SYSTEM_UI_FLAG_VISIBLE;
-                        param.setResult(visibility);
-                    }
-                }
-            );
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Hook View.getSystemUiVisibility 失败 - " + e.getMessage());
-        }
-        
-        XposedBridge.log(TAG + ": 已 Hook 目标应用 - " + lpparam.packageName);
     }
 }
