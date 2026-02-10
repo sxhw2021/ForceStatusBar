@@ -28,7 +28,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
 
     private static final java.util.Map<Activity, GuardTask> guardedActivities = new java.util.WeakHashMap<>();
 
-    private static class GuardTask implements Runnable {
+    private class GuardTask implements Runnable {
         private final Activity activity;
         private final long startTime;
         private long lastRun;
@@ -43,16 +43,16 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         @Override
         public void run() {
             if (stopped || activity == null || activity.isFinishing() || activity.isDestroyed()) {
-                stopGuarding(activity);
+                StatusBarHook.this.stopGuarding(activity);
                 return;
             }
 
             if (System.currentTimeMillis() - startTime > MAX_GUARD_TIME) {
-                stopGuarding(activity);
+                StatusBarHook.this.stopGuarding(activity);
                 return;
             }
 
-            forceShowStatusBar(activity);
+            StatusBarHook.this.forceShowStatusBar(activity);
 
             long interval = 100;
             if (System.currentTimeMillis() - lastRun < 200) {
