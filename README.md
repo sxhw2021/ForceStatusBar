@@ -1,4 +1,4 @@
-# 强制显示状态栏 - LSPosed/Xposed 模块--使用opencode开发，将功能需求描述给AI，AI生成整个项目文件，在github构建，有报错让AI修改
+# 强制显示状态栏 - LSPosed模块--使用opencode开发，将功能需求描述给AI，AI生成整个项目文件，在github构建，有报错让AI修改
 
 ## 功能
 在选定的应用中强制显示状态栏，防止游戏或全屏应用隐藏状态栏。
@@ -6,8 +6,8 @@
 ## 使用方法
 
 ### 1. 安装模块
-- 将编译好的 APK 安装到手机
-- 确保已安装 LSPosed 或 Xposed 框架
+- 在release下载 APK 安装到手机
+- 确保已安装 LSPosed 框架
 
 ### 2. 激活模块
 1. 打开 LSPosed 管理器
