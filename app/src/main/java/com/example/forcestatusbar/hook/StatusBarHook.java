@@ -234,7 +234,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         View decorView = window.getDecorView();
                         decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
                         
-                        // 为根布局添加状态栏高度 padding，避免内容被遮挡
+                        // 智能调整根布局，避免内容被遮挡同时保持触摸坐标正确
                         adjustRootViewPadding(activity);
                         
                         XposedBridge.log(TAG + ": Activity.onResume 强制显示状态栏 - " + lpparam.packageName);
@@ -321,8 +321,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * 调整根布局 padding 以避免被状态栏遮挡
-     * 参考 immersionbar 库的 Edge-to-Edge 实现方式
+     * 调整根布局以避免被状态栏遮挡，同时保持触摸坐标正确
+     * 使用更精确的布局调整而不是简单的 padding
      */
     private void adjustRootViewPadding(Activity activity) {
         try {
@@ -334,85 +334,207 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 return;
             }
             
-            ViewGroup rootLayout = (ViewGroup) contentView.getChildAt(0);
-            
-            // 保存原始 padding（只保存一次）
-            if (rootLayout.getTag() == null) {
-                rootLayout.setTag(new int[]{
-                    rootLayout.getPaddingLeft(),
-                    rootLayout.getPaddingTop(),
-                    rootLayout.getPaddingRight(),
-                    rootLayout.getPaddingBottom()
-                });
-            }
-            
-            int[] originalPadding = (int[]) rootLayout.getTag();
-            
+            // 采用更兼容的方案：修改布局参数而不是 padding
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // Android 11+ 使用现代 WindowInsets API
-                decorView.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
-                    @Override
-                    public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
-                        try {
-                            // 获取状态栏 inset
-                            int statusBarInset = insets.getSystemWindowInsetTop();
-                            
-                            if (statusBarInset > 0) {
-                                // 应用 padding 避开状态栏
-                                rootLayout.setPadding(
-                                    originalPadding[0],
-                                    originalPadding[1] + statusBarInset,
-                                    originalPadding[2],
-                                    originalPadding[3]
-                                );
-                                
-                                XposedBridge.log(TAG + ": Android 11+ 状态栏 padding=" + statusBarInset + "px");
-                            }
-                        } catch (Exception e) {
-                            // 降级到传统方法
-                            applyFallbackPadding(rootLayout, originalPadding, activity);
-                        }
-                        
-                        return insets;
-                    }
-                });
-                
-                // 立即触发 insets 计算
-                decorView.requestApplyInsets();
-                
+                // Android 11+ 使用现代 WindowInsets API + 布局偏移
+                adjustWithInsetsAPI(activity, decorView, contentView);
             } else {
                 // Android 10 及以下使用传统方法
-                applyFallbackPadding(rootLayout, originalPadding, activity);
+                adjustWithLegacyMethod(activity, decorView, contentView);
             }
             
-            XposedBridge.log(TAG + ": 已配置状态栏 padding 调整 - " + activity.getClass().getSimpleName());
+            XposedBridge.log(TAG + ": 已配置状态栏布局调整 - " + activity.getClass().getSimpleName());
             
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": 调整 padding 失败 - " + e.getMessage());
+            XposedBridge.log(TAG + ": 智能布局调整失败，使用备用方案 - " + e.getMessage());
+            // 备用方案：使用简单的 padding 调整
+            applySimplePaddingFallback(activity);
         }
     }
     
     /**
-     * 备用 padding 应用方法（用于 Android 10 及以下或出错时）
+     * 简单的备用方案：使用 padding（可能导致触摸偏移，但确保内容可见）
      */
-    private void applyFallbackPadding(ViewGroup rootLayout, int[] originalPadding, Activity activity) {
+    private void applySimplePaddingFallback(Activity activity) {
         try {
-            int statusBarHeight = getStatusBarHeight(activity);
+            View decorView = activity.getWindow().getDecorView();
+            ViewGroup contentView = (ViewGroup) decorView.findViewById(android.R.id.content);
             
-            if (statusBarHeight > 0) {
-                rootLayout.setPadding(
-                    originalPadding[0],
-                    originalPadding[1] + statusBarHeight,
-                    originalPadding[2],
-                    originalPadding[3]
+            if (contentView != null && contentView.getChildCount() > 0) {
+                View rootView = contentView.getChildAt(0);
+                int statusBarHeight = getStatusBarHeight(activity);
+                
+                // 保存原始信息
+                if (rootView.getTag(ResourceIds.original_layout_info) == null) {
+                    rootView.setTag(ResourceIds.original_layout_info, new LayoutInfo(
+                        rootView.getPaddingLeft(),
+                        rootView.getPaddingTop(),
+                        rootView.getPaddingRight(),
+                        rootView.getPaddingBottom(),
+                        rootView.getLayoutParams()
+                    ));
+                }
+                
+                LayoutInfo info = (LayoutInfo) rootView.getTag(ResourceIds.original_layout_info);
+                rootView.setPadding(
+                    info.originalPaddingLeft,
+                    info.originalPaddingTop + statusBarHeight,
+                    info.originalPaddingRight,
+                    info.originalPaddingBottom
                 );
                 
-                XposedBridge.log(TAG + ": 备用方法状态栏 padding=" + statusBarHeight + "px");
+                XposedBridge.log(TAG + ": 备用 padding 调整完成 height=" + statusBarHeight + "px");
             }
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": 备用 padding 方法失败 - " + e.getMessage());
+            XposedBridge.log(TAG + ": 备用方案也失败 - " + e.getMessage());
+        }
+    
+    /**
+     * 使用 WindowInsets API 进行精确布局调整（Android 11+）
+     */
+    private void adjustWithInsetsAPI(Activity activity, View decorView, ViewGroup contentView) {
+        decorView.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
+            @Override
+            public WindowInsets onApplyWindowInsets(View v, WindowInsets insets) {
+                try {
+                    int statusBarInset = insets.getSystemWindowInsetTop();
+                    
+                    if (statusBarInset > 0) {
+                        // 遍历所有直接子视图，智能调整
+                        adjustContentViewsInsets(contentView, statusBarInset, activity);
+                        XposedBridge.log(TAG + ": Android 11+ 智能布局调整 inset=" + statusBarInset + "px");
+                    }
+                } catch (Exception e) {
+                    XposedBridge.log(TAG + ": WindowInsets 调整失败 - " + e.getMessage());
+                }
+                
+                return insets;
+            }
+        });
+        
+        decorView.requestApplyInsets();
+    }
+    
+    /**
+     * 传统方法调整（Android 10 及以下）
+     */
+    private void adjustWithLegacyMethod(Activity activity, View decorView, ViewGroup contentView) {
+        int statusBarHeight = getStatusBarHeight(activity);
+        if (statusBarHeight > 0) {
+            adjustContentViewsInsets(contentView, statusBarHeight, activity);
+            XposedBridge.log(TAG + ": 传统方法布局调整 height=" + statusBarHeight + "px");
         }
     }
+    
+    /**
+     * 智能调整内容视图的 insets，避免触摸坐标偏移
+     */
+    private void adjustContentViewsInsets(ViewGroup parent, int insetTop, Activity activity) {
+        try {
+            // 方案1：对于特定布局类型使用不同的策略
+            for (int i = 0; i < parent.getChildCount(); i++) {
+                View child = parent.getChildAt(i);
+                
+                if (child instanceof ViewGroup) {
+                    ViewGroup childGroup = (ViewGroup) child;
+                    
+                    // 保存原始布局信息
+                    Object originalInfo = child.getTag(ResourceIds.original_layout_info);
+                    if (originalInfo == null) {
+                        child.setTag(ResourceIds.original_layout_info, new LayoutInfo(
+                            child.getPaddingLeft(),
+                            child.getPaddingTop(), 
+                            child.getPaddingRight(),
+                            child.getPaddingBottom(),
+                            child.getLayoutParams()
+                        ));
+                    }
+                    
+                    LayoutInfo info = (LayoutInfo) child.getTag(ResourceIds.original_layout_info);
+                    
+                    // 根据视图类型选择调整策略
+                    if (shouldUseMarginStrategy(child)) {
+                        // 使用 margin 策略：不影响触摸坐标
+                        adjustWithMargin(childGroup, insetTop, info);
+                    } else {
+                        // 使用 padding 策略：仅用于支持 insets 的视图
+                        adjustWithPadding(childGroup, insetTop, info);
+                    }
+                }
+            }
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": 智能布局调整失败 - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 判断是否应该使用 margin 策略
+     */
+    private boolean shouldUseMarginStrategy(View view) {
+        // 对于常见的布局容器，优先使用 margin 避免触摸坐标问题
+        String className = view.getClass().getSimpleName();
+        return className.contains("LinearLayout") || 
+               className.contains("FrameLayout") ||
+               className.contains("RelativeLayout") ||
+               className.contains("ConstraintLayout");
+    }
+    
+    /**
+     * 使用 margin 调整（推荐，不影响触摸坐标）
+     */
+    private void adjustWithMargin(ViewGroup view, int insetTop, LayoutInfo originalInfo) {
+        try {
+            ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) view.getLayoutParams();
+            
+            // 保存原始 margin
+            if (originalInfo.originalMarginTop == -1) {
+                originalInfo.originalMarginTop = params.topMargin;
+            }
+            
+            // 应用新的 margin
+            params.topMargin = originalInfo.originalMarginTop + insetTop;
+            view.setLayoutParams(params);
+            
+            // 恢复原始 padding
+            view.setPadding(
+                originalInfo.originalPaddingLeft,
+                originalInfo.originalPaddingTop,
+                originalInfo.originalPaddingRight,
+                originalInfo.originalPaddingBottom
+            );
+            
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Margin 调整失败 - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 使用 padding 调整（备选方案）
+     */
+    private void adjustWithPadding(ViewGroup view, int insetTop, LayoutInfo originalInfo) {
+        try {
+            view.setPadding(
+                originalInfo.originalPaddingLeft,
+                originalInfo.originalPaddingTop + insetTop,
+                originalInfo.originalPaddingRight,
+                originalInfo.originalPaddingBottom
+            );
+            
+            // 恢复原始 margin
+            if (view.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
+                ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) view.getLayoutParams();
+                if (originalInfo.originalMarginTop != -1) {
+                    params.topMargin = originalInfo.originalMarginTop;
+                    view.setLayoutParams(params);
+                }
+            }
+            
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Padding 调整失败 - " + e.getMessage());
+        }
+    }
+    
+
     
     /**
      * 获取状态栏高度
@@ -464,27 +586,92 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * 恢复根布局原始 padding
+     * 恢复根布局原始布局
      */
-    private void restoreRootViewPadding(Activity activity) {
+    private void restoreRootViewLayout(Activity activity) {
         try {
             View decorView = activity.getWindow().getDecorView();
             ViewGroup contentView = (ViewGroup) decorView.findViewById(android.R.id.content);
-            if (contentView != null && contentView.getChildCount() > 0) {
-                ViewGroup rootLayout = (ViewGroup) contentView.getChildAt(0);
-                if (rootLayout != null && rootLayout.getTag() != null) {
-                    int[] originalPadding = (int[]) rootLayout.getTag();
-                    rootLayout.setPadding(
-                        originalPadding[0],
-                        originalPadding[1],
-                        originalPadding[2],
-                        originalPadding[3]
-                    );
-                    XposedBridge.log(TAG + ": 已恢复根布局原始 padding - " + activity.getClass().getSimpleName());
+            if (contentView != null) {
+                restoreContentViewsLayouts(contentView, activity);
+                XposedBridge.log(TAG + ": 已恢复根布局原始状态 - " + activity.getClass().getSimpleName());
+            }
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": 恢复布局失败 - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * 恢复内容视图的原始布局
+     */
+    private void restoreContentViewsLayouts(ViewGroup parent, Activity activity) {
+        try {
+            for (int i = 0; i < parent.getChildCount(); i++) {
+                View child = parent.getChildAt(i);
+                
+                if (child instanceof ViewGroup) {
+                    ViewGroup childGroup = (ViewGroup) child;
+Object originalInfo = child.getTag(ResourceIds.original_layout_info);
+                    
+                if (originalInfo instanceof LayoutInfo) {
+                        LayoutInfo info = (LayoutInfo) originalInfo;
+                        
+                        // 恢复原始 padding
+                        childGroup.setPadding(
+                            info.originalPaddingLeft,
+                            info.originalPaddingTop,
+                            info.originalPaddingRight,
+                            info.originalPaddingBottom
+                        );
+                        
+                        // 恢复原始 margin
+                        if (childGroup.getLayoutParams() instanceof ViewGroup.MarginLayoutParams) {
+                            ViewGroup.MarginLayoutParams params = (ViewGroup.MarginLayoutParams) childGroup.getLayoutParams();
+                            if (info.originalMarginTop != -1) {
+                                params.topMargin = info.originalMarginTop;
+                                childGroup.setLayoutParams(params);
+                            }
+                        }
+                    }
                 }
             }
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": 恢复 padding 失败 - " + e.getMessage());
+            XposedBridge.log(TAG + ": 恢复子视图布局失败 - " + e.getMessage());
         }
+    }
+    
+    /**
+     * 布局信息存储类
+     * 用于保存视图的原始布局参数，以便恢复
+     */
+    private static class LayoutInfo {
+        int originalPaddingLeft;
+        int originalPaddingTop;
+        int originalPaddingRight;
+        int originalPaddingBottom;
+        int originalMarginTop = -1; // -1 表示未设置
+        ViewGroup.LayoutParams originalParams;
+        
+        LayoutInfo(int paddingLeft, int paddingTop, int paddingRight, int paddingBottom, 
+                  ViewGroup.LayoutParams params) {
+            this.originalPaddingLeft = paddingLeft;
+            this.originalPaddingTop = paddingTop;
+            this.originalPaddingRight = paddingRight;
+            this.originalPaddingBottom = paddingBottom;
+            this.originalParams = params;
+            
+            // 如果是 margin 参数，保存原始 margin
+            if (params instanceof ViewGroup.MarginLayoutParams) {
+                this.originalMarginTop = ((ViewGroup.MarginLayoutParams) params).topMargin;
+            }
+        }
+    }
+    
+    /**
+     * 资源 ID 常量（用于 Tag 键）
+     * 使用系统 View 的内部 ID 范围避免冲突
+     */
+    private static class ResourceIds {
+        static final int original_layout_info = 0x00FF0001; // 自定义 ID
     }
 }
