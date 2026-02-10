@@ -24,20 +24,18 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     private static final String TAG = "ForceStatusBar";
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
 
-    private static final long[] DELAYS = {50, 100, 200, 500, 1000};
-    private static final long MAX_GUARD_TIME = 5000;
+    private static final long[] DELAYS = {30, 80, 200, 500};
+    private static final long MAX_GUARD_TIME = 3000;
 
     private static final WeakHashMap<Activity, GuardState> guardedActivities = new WeakHashMap<>();
 
     private static class GuardState {
         Runnable[] guardTasks;
         long startTime;
-        int attempt;
 
         GuardState(int taskCount) {
             this.guardTasks = new Runnable[taskCount];
             this.startTime = System.currentTimeMillis();
-            this.attempt = 0;
         }
     }
 
@@ -130,6 +128,11 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             startFullGuard(activity);
                         }
                     }
+                    if ((mask & WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) != 0) {
+                        flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                        param.args[0] = flags;
+                        XposedBridge.log(TAG + ": 拦截 setFlags FLAG_LAYOUT_NO_LIMITS");
+                    }
                 }
             }
         );
@@ -152,6 +155,11 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         if (activity != null) {
                             startFullGuard(activity);
                         }
+                    }
+                    if ((flags & WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) != 0) {
+                        flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                        param.args[0] = flags;
+                        XposedBridge.log(TAG + ": 拦截 addFlags FLAG_LAYOUT_NO_LIMITS");
                     }
                 }
             }
@@ -213,6 +221,35 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 }
             }
         );
+
+        XposedHelpers.findAndHookMethod(
+            View.class.getName(),
+            lpparam.classLoader,
+            "setSystemUiVisibility",
+            int.class,
+            new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
+                    int visibility = (int) param.args[0];
+                    int original = visibility;
+
+                    visibility &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
+                    visibility &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
+                    visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE;
+                    visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
+
+                    visibility |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                    visibility |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                    visibility |= View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
+                    visibility |= View.SYSTEM_UI_FLAG_VISIBLE;
+
+                    if (visibility != original) {
+                        param.args[0] = visibility;
+                        XposedBridge.log(TAG + ": 拦截 SystemUiVisibility 0x" + Integer.toHexString(original));
+                    }
+                }
+            }
+        );
     }
 
     private Activity getActivityFromWindow(XC_MethodHook.MethodHookParam param) {
@@ -242,7 +279,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 GuardState existing = guardedActivities.get(activity);
                 if (existing != null) {
                     existing.startTime = System.currentTimeMillis();
-                    existing.attempt = 0;
                 }
                 return;
             }
@@ -307,11 +343,13 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             if (decorView == null) return;
 
             window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
+            window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
 
             WindowManager.LayoutParams attrs = window.getAttributes();
             if (attrs != null) {
                 attrs.flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
+                attrs.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
                 attrs.flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
                 window.setAttributes(attrs);
             }
@@ -322,14 +360,13 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 if (controller != null) {
                     controller.show(android.view.WindowInsets.Type.statusBars());
                 }
-                window.setStatusBarColor(0x00000000);
+            } else {
+                int uiFlags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                             View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                             View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                             View.SYSTEM_UI_FLAG_VISIBLE;
+                decorView.setSystemUiVisibility(uiFlags);
             }
-
-            int uiFlags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                         View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
-                         View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                         View.SYSTEM_UI_FLAG_VISIBLE;
-            decorView.setSystemUiVisibility(uiFlags);
 
         } catch (Exception ignored) {
         }
