@@ -4,11 +4,16 @@ import android.app.Activity;
 import android.os.Build;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.SurfaceView;
+import android.view.TextureView;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
 
-import java.lang.reflect.Field;
+import java.util.HashMap;
+import java.util.Map;
+import java.util.WeakHashMap;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
@@ -21,11 +26,14 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     private static final String TAG = "ForceStatusBar";
     private static final Handler mainHandler = new Handler(Looper.getMainLooper());
     
+    // 记录已hook的activity，避免重复
+    private static final WeakHashMap<Activity, Boolean> hookedActivities = new WeakHashMap<>();
+    
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         hookActivityLifecycle(lpparam);
         hookWindowMethods(lpparam);
-        startPeriodicCheck(lpparam);
+        hookViewCreation(lpparam);
         XposedBridge.log(TAG + ": 已初始化 - " + lpparam.packageName);
     }
     
@@ -40,29 +48,61 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         final Activity activity = (Activity) param.thisObject;
-                        // 立即执行
-                        forceShowStatusBar(activity);
-                        // 延迟再执行几次
-                        postDelayedForceShow(activity, 100);
-                        postDelayedForceShow(activity, 500);
-                        postDelayedForceShow(activity, 1000);
+                        if (hookedActivities.containsKey(activity)) {
+                            return;
+                        }
+                        hookedActivities.put(activity, true);
+                        
+                        // 启动持续守护线程
+                        startGuardian(activity);
                     }
                 }
             );
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Hook onResume 失败");
         }
+        
+        // Hook onPause - 停止守护
+        try {
+            XposedHelpers.findAndHookMethod(
+                Activity.class.getName(),
+                lpparam.classLoader,
+                "onPause",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Activity activity = (Activity) param.thisObject;
+                        hookedActivities.remove(activity);
+                    }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Hook onPause 失败");
+        }
     }
     
-    private void postDelayedForceShow(final Activity activity, long delayMillis) {
-        mainHandler.postDelayed(new Runnable() {
+    /**
+     * 持续守护线程 - 每200ms强制显示一次状态栏
+     */
+    private void startGuardian(final Activity activity) {
+        final Runnable guardianTask = new Runnable() {
             @Override
             public void run() {
-                if (activity != null && !activity.isFinishing()) {
-                    forceShowStatusBar(activity);
+                if (activity == null || activity.isFinishing() || activity.isDestroyed()) {
+                    return;
                 }
+                
+                // 强制显示状态栏
+                forceShowStatusBar(activity);
+                
+                // 继续下一次
+                mainHandler.postDelayed(this, 200);
             }
-        }, delayMillis);
+        };
+        
+        // 立即开始
+        mainHandler.post(guardianTask);
+        XposedBridge.log(TAG + ": 启动守护线程 - " + activity.getPackageName());
     }
     
     private void hookWindowMethods(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -83,7 +123,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         if ((mask & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
                             flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
                             param.args[0] = flags;
-                            XposedBridge.log(TAG + ": 拦截 FLAG_FULLSCREEN");
+                            XposedBridge.log(TAG + ": 拦截 setFlags FLAG_FULLSCREEN");
                         }
                     }
                 }
@@ -126,23 +166,21 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     @Override
                     protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
                         int visibility = (int) param.args[0];
-                        
-                        // 保存原始值用于日志
                         int original = visibility;
                         
-                        // 移除隐藏状态栏的标志
+                        // 只移除隐藏状态栏的标志
                         visibility &= ~View.SYSTEM_UI_FLAG_FULLSCREEN;
                         visibility &= ~View.SYSTEM_UI_FLAG_HIDE_NAVIGATION;
                         visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE;
                         visibility &= ~View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY;
                         
-                        // 添加显示状态栏的标志
+                        // 确保基本标志
                         visibility |= View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
                         visibility |= View.SYSTEM_UI_FLAG_VISIBLE;
                         
                         if (visibility != original) {
                             param.args[0] = visibility;
-                            XposedBridge.log(TAG + ": 修改 SystemUiVisibility 0x" + Integer.toHexString(original) + " -> 0x" + Integer.toHexString(visibility));
+                            XposedBridge.log(TAG + ": 拦截 SystemUiVisibility 0x" + Integer.toHexString(original));
                         }
                     }
                 }
@@ -153,35 +191,62 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * 定时检查 - 确保状态栏始终显示
+     * Hook SurfaceView/TextureView 创建 - 游戏引擎常用
      */
-    private void startPeriodicCheck(XC_LoadPackage.LoadPackageParam lpparam) {
+    private void hookViewCreation(XC_LoadPackage.LoadPackageParam lpparam) {
+        // Hook SurfaceView 创建
         try {
             XposedHelpers.findAndHookMethod(
-                Activity.class.getName(),
+                SurfaceView.class.getName(),
                 lpparam.classLoader,
-                "onResume",
+                "onAttachedToWindow",
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        final Activity activity = (Activity) param.thisObject;
-                        // 每500ms检查一次，持续5秒
-                        for (int i = 1; i <= 10; i++) {
-                            mainHandler.postDelayed(new Runnable() {
-                                @Override
-                                public void run() {
-                                    if (activity != null && !activity.isFinishing()) {
-                                        forceShowStatusBar(activity);
-                                    }
-                                }
-                            }, i * 500);
+                        View view = (View) param.thisObject;
+                        Activity activity = getActivityFromView(view);
+                        if (activity != null) {
+                            forceShowStatusBar(activity);
                         }
                     }
                 }
             );
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": 启动定时检查失败");
+            XposedBridge.log(TAG + ": Hook SurfaceView 失败");
         }
+        
+        // Hook TextureView 创建
+        try {
+            XposedHelpers.findAndHookMethod(
+                TextureView.class.getName(),
+                lpparam.classLoader,
+                "onAttachedToWindow",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        View view = (View) param.thisObject;
+                        Activity activity = getActivityFromView(view);
+                        if (activity != null) {
+                            forceShowStatusBar(activity);
+                        }
+                    }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Hook TextureView 失败");
+        }
+    }
+    
+    private Activity getActivityFromView(View view) {
+        try {
+            Context context = view.getContext();
+            if (context instanceof Activity) {
+                return (Activity) context;
+            }
+        } catch (Exception e) {
+            // 忽略
+        }
+        return null;
     }
     
     /**
@@ -202,7 +267,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
             window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
             
-            // 方法2：使用反射修改 WindowManager.LayoutParams
+            // 方法2：修改 LayoutParams
             try {
                 WindowManager.LayoutParams attrs = window.getAttributes();
                 if (attrs != null) {
@@ -214,15 +279,12 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 // 忽略
             }
             
-            // 方法3：Android 11+ 使用 WindowInsetsController
+            // 方法3：Android 11+ 使用新API
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.setDecorFitsSystemWindows(false);
-                
                 if (window.getInsetsController() != null) {
                     window.getInsetsController().show(android.view.WindowInsets.Type.statusBars());
                 }
-                
-                // 设置半透明状态栏
                 window.setStatusBarColor(0x66000000);
             }
             
@@ -231,10 +293,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                          View.SYSTEM_UI_FLAG_VISIBLE;
             decorView.setSystemUiVisibility(uiFlags);
             
-            XposedBridge.log(TAG + ": 强制显示状态栏 - " + activity.getPackageName());
-            
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": 强制显示失败 - " + e.getMessage());
+            // 忽略错误
         }
     }
 }
