@@ -328,7 +328,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
-            View contentView = decorView.findViewById(android.R.id.content);
+            ViewGroup contentView = (ViewGroup) decorView.findViewById(android.R.id.content);
             
             if (contentView == null || contentView.getChildCount() == 0) {
                 return;
@@ -469,8 +469,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     private void restoreRootViewPadding(Activity activity) {
         try {
             View decorView = activity.getWindow().getDecorView();
-            View contentView = decorView.findViewById(android.R.id.content);
-            if (contentView != null) {
+            ViewGroup contentView = (ViewGroup) decorView.findViewById(android.R.id.content);
+            if (contentView != null && contentView.getChildCount() > 0) {
                 ViewGroup rootLayout = (ViewGroup) contentView.getChildAt(0);
                 if (rootLayout != null && rootLayout.getTag() != null) {
                     int[] originalPadding = (int[]) rootLayout.getTag();
