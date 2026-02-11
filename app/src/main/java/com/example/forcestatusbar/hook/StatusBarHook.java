@@ -3,22 +3,10 @@ package com.example.forcestatusbar.hook;
 import android.app.Activity;
 import android.content.Context;
 import android.content.res.Configuration;
-import android.graphics.Bitmap;
-import android.graphics.Canvas;
-import android.graphics.Color;
-import android.graphics.drawable.BitmapDrawable;
-import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
 import android.os.Build;
-import android.os.Handler;
-import android.os.Looper;
 import android.util.DisplayMetrics;
-import android.view.PixelCopy;
 import android.view.View;
-import android.view.ViewTreeObserver;
 import android.view.Window;
-import android.view.WindowInsets;
-import android.view.WindowInsetsController;
 import android.view.WindowManager;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -30,7 +18,6 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public class StatusBarHook implements IXposedHookLoadPackage {
     
     private static final String TAG = "ForceStatusBar";
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
     
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
@@ -248,9 +235,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         View decorView = window.getDecorView();
                         decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
                         
-                        // Setup dynamic status bar color
-                        setupDynamicStatusBarColor(activity);
-                        
                         XposedBridge.log(TAG + ": Activity.onResume forced status bar - " + lpparam.packageName);
                     }
                 }
@@ -335,8 +319,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * Improved approach: adjust root layout padding to avoid status bar overlap
-     * Uses more precise edge detection to minimize touch offset
+     * Simplified approach: adjust root layout padding to avoid status bar overlap
+     * Focus on minimizing touch offset while maintaining functionality
      */
     private void adjustRootViewPadding(Activity activity) {
         try {
@@ -354,17 +338,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 return;
             }
             
-            // Get system insets for precise edge detection (Android 11+)
+            // Get status bar height
             int statusBarHeight = getStatusBarHeight(activity);
-            int navigationBarHeight = 0;
-            
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                WindowInsets insets = decorView.getRootWindowInsets();
-                if (insets != null) {
-                    statusBarHeight = insets.getStableInsetTop();
-                    navigationBarHeight = insets.getStableInsetBottom();
-                }
-            }
             
             if (statusBarHeight > 0) {
                 // Store original padding if not already stored
@@ -379,192 +354,24 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 
                 int[] originalPadding = (int[]) rootView.getTag();
                 
-                // Get current orientation
+                // Simple adjustment: only add top padding for portrait, minimal for landscape
                 boolean isLandscape = isLandscapeOrientation(activity);
-                
-                // More precise padding calculation
-                int topPadding;
-                if (isLandscape) {
-                    // In landscape, status bar is usually on the right side (not top)
-                    // Only add minimal padding to avoid touch offset
-                    topPadding = Math.min(statusBarHeight / 6, 4);
-                } else {
-                    // In portrait, add exact status bar height
-                    topPadding = statusBarHeight;
-                }
+                int topPadding = isLandscape ? Math.min(statusBarHeight / 4, 8) : statusBarHeight;
                 
                 // Apply adjusted padding
                 rootView.setPadding(
                     originalPadding[0],
                     originalPadding[1] + topPadding,
                     originalPadding[2],
-                    originalPadding[3] + (isLandscape ? 0 : navigationBarHeight)
+                    originalPadding[3]
                 );
                 
-                XposedBridge.log(TAG + ": Applied precise padding - Landscape: " + isLandscape + 
-                          ", Top: " + topPadding + "px, Nav: " + navigationBarHeight + "px");
+                XposedBridge.log(TAG + ": Applied padding adjustment - Landscape: " + isLandscape + 
+                          ", Top padding: " + topPadding + "px");
             }
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to adjust padding - " + e.getMessage());
         }
-    }
-    
-    /**
-     * Setup dynamic status bar color that adapts to game content
-     */
-    private void setupDynamicStatusBarColor(Activity activity) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return;
-        }
-        
-        try {
-            Window window = activity.getWindow();
-            View decorView = window.getDecorView();
-            
-            // Set transparent status bar initially
-            window.setStatusBarColor(Color.TRANSPARENT);
-            
-            // Add layout listener to detect content changes and adjust status bar color
-            decorView.getViewTreeObserver().addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-                @Override
-                public void onGlobalLayout() {
-                    try {
-                        updateStatusBarColor(activity, window, decorView);
-                    } catch (Exception e) {
-                        // Ignore errors
-                    }
-                }
-            });
-            
-            // Initial color update
-            mainHandler.postDelayed(() -> {
-                try {
-                    updateStatusBarColor(activity, window, decorView);
-                } catch (Exception e) {
-                    // Ignore errors
-                }
-            }, 500);
-            
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to setup dynamic status bar color - " + e.getMessage());
-        }
-    }
-    
-    /**
-     * Update status bar color based on content behind it
-     */
-    private void updateStatusBarColor(Activity activity, Window window, View decorView) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
-            return;
-        }
-        
-        try {
-            // Get the content view
-            android.view.ViewGroup contentView = decorView.findViewById(android.R.id.content);
-            if (contentView == null || contentView.getChildCount() == 0) {
-                return;
-            }
-            
-            View rootView = contentView.getChildAt(0);
-            if (rootView == null) {
-                return;
-            }
-            
-            // Get color from top of the screen
-            int dominantColor = getDominantColorFromTop(rootView);
-            
-            // Calculate if color is light or dark
-            boolean isLightColor = isLightColor(dominantColor);
-            
-            // Set status bar color with slight transparency
-            int statusBarColor = adjustColorForStatusBar(dominantColor);
-            window.setStatusBarColor(statusBarColor);
-            
-            // Set status bar text color (light or dark icons)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                WindowInsetsController controller = window.getInsetsController();
-                if (controller != null) {
-                    if (isLightColor) {
-                        controller.setSystemBarsAppearance(
-                            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS,
-                            WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS
-                        );
-                    } else {
-                        controller.setSystemBarsAppearance(0, WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS);
-                    }
-                }
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                View systemUiView = window.getDecorView();
-                int flags = systemUiView.getSystemUiVisibility();
-                if (isLightColor) {
-                    flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                } else {
-                    flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
-                }
-                systemUiView.setSystemUiVisibility(flags);
-            }
-            
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to update status bar color - " + e.getMessage());
-        }
-    }
-    
-    /**
-     * Get dominant color from the top portion of the view
-     */
-    private int getDominantColorFromTop(View view) {
-        try {
-            // Try to get color from view background
-            Drawable background = view.getBackground();
-            if (background instanceof ColorDrawable) {
-                return ((ColorDrawable) background).getColor();
-            }
-            
-            // If no solid color, try to sample from top area
-            // Use a simple heuristic: check if view has children and get their backgrounds
-            if (view instanceof android.view.ViewGroup) {
-                android.view.ViewGroup viewGroup = (android.view.ViewGroup) view;
-                for (int i = 0; i < Math.min(viewGroup.getChildCount(), 3); i++) {
-                    View child = viewGroup.getChildAt(i);
-                    if (child != null && child.getBackground() instanceof ColorDrawable) {
-                        return ((ColorDrawable) child.getBackground()).getColor();
-                    }
-                }
-            }
-            
-            // Default: semi-transparent dark color
-            return Color.parseColor("#80000000");
-        } catch (Exception e) {
-            return Color.parseColor("#80000000");
-        }
-    }
-    
-    /**
-     * Check if a color is light or dark
-     */
-    private boolean isLightColor(int color) {
-        int red = Color.red(color);
-        int green = Color.green(color);
-        int blue = Color.blue(color);
-        
-        // Calculate luminance using standard formula
-        double luminance = (0.299 * red + 0.587 * green + 0.114 * blue) / 255;
-        return luminance > 0.5;
-    }
-    
-    /**
-     * Adjust color for status bar with slight transparency
-     */
-    private int adjustColorForStatusBar(int color) {
-        int alpha = Color.alpha(color);
-        int red = Color.red(color);
-        int green = Color.green(color);
-        int blue = Color.blue(color);
-        
-        // Ensure minimum transparency for readability
-        int newAlpha = Math.max(alpha, 200); // At least ~78% opaque
-        
-        return Color.argb(newAlpha, red, green, blue);
     }
     
     /**
