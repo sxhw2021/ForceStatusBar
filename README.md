@@ -21,17 +21,11 @@
 ### 3. 验证效果
 打开目标应用，状态栏应该始终显示在屏幕顶部。
 
-## 技术原理
-模块通过 Hook `Window` 类的以下方法来实现：
-- `setFlags()` - 拦截 FLAG_FULLSCREEN 设置
-- `addFlags()` - 阻止添加 FLAG_FULLSCREEN
-- `clearFlags()` - 阻止清除 FLAG_FORCE_NOT_FULLSCREEN
-
 ## 注意事项
 - 需要 Root 权限和 LSPosed/Xposed 框架
 - 部分游戏可能有额外的全屏检测机制，可能不完全生效
 - 如果某些应用仍然全屏，尝试同时 Hook 系统框架
-
+- 部分应用使用后存在触摸向下偏移的BUG
 ## 兼容性
 - Android 8.0 (API 26) 及以上
 - LSPosed 框架
