@@ -2,6 +2,7 @@ package com.example.forcestatusbar.hook;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.res.Configuration;
 import android.os.Build;
 import android.util.DisplayMetrics;
 import android.view.View;
@@ -230,6 +231,9 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         // Adjust root view padding to avoid status bar overlap
                         adjustRootViewPadding(activity);
                         
+                        // Set up orientation change listener for dynamic adjustment
+                        setupOrientationChangeListener(activity);
+                        
                         // Set system UI visibility
                         View decorView = window.getDecorView();
                         decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
@@ -318,8 +322,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * Simple approach: adjust root layout padding to avoid status bar overlap
-     * This is a more reliable solution that avoids complex layout manipulation
+     * Smart approach: adjust root layout padding based on screen orientation
+     * This handles both portrait and landscape modes correctly
      */
     private void adjustRootViewPadding(Activity activity) {
         try {
@@ -331,11 +335,17 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 return;
             }
             
-            // Get the root view and apply simple padding adjustment
+            // Get the root view
             View rootView = contentView.getChildAt(0);
-            int statusBarHeight = getStatusBarHeight(activity);
+            if (rootView == null) {
+                return;
+            }
             
-            if (rootView != null && statusBarHeight > 0) {
+            // Get current orientation and status bar position
+            int statusBarHeight = getStatusBarHeight(activity);
+            boolean isLandscape = isLandscapeOrientation(activity);
+            
+            if (statusBarHeight > 0) {
                 // Store original padding if not already stored
                 if (rootView.getTag() == null) {
                     rootView.setTag(new int[]{
@@ -348,19 +358,129 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 
                 int[] originalPadding = (int[]) rootView.getTag();
                 
-                // Simple padding adjustment for all versions
+                // Calculate padding adjustments based on orientation and status bar position
+                PaddingAdjustment adjustment = calculatePaddingAdjustment(activity, statusBarHeight, isLandscape);
+                
+                // Apply smart padding adjustment
                 rootView.setPadding(
-                    originalPadding[0],
-                    originalPadding[1] + statusBarHeight,
-                    originalPadding[2],
-                    originalPadding[3]
+                    originalPadding[0] + adjustment.left,
+                    originalPadding[1] + adjustment.top,
+                    originalPadding[2] + adjustment.right,
+                    originalPadding[3] + adjustment.bottom
                 );
                 
-                XposedBridge.log(TAG + ": Applied status bar padding adjustment - " + statusBarHeight + "px");
+                XposedBridge.log(TAG + ": Applied smart padding adjustment - Landscape: " + isLandscape + 
+                          ", L:" + adjustment.left + ", T:" + adjustment.top + 
+                          ", R:" + adjustment.right + ", B:" + adjustment.bottom + "px");
             }
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to adjust padding - " + e.getMessage());
         }
+    }
+    
+    /**
+     * Check if device is in landscape orientation
+     */
+    private boolean isLandscapeOrientation(Activity activity) {
+        try {
+            int orientation = activity.getResources().getConfiguration().orientation;
+            return orientation == Configuration.ORIENTATION_LANDSCAPE;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    /**
+     * Calculate padding adjustments based on screen orientation and status bar position
+     */
+    private PaddingAdjustment calculatePaddingAdjustment(Activity activity, int statusBarHeight, boolean isLandscape) {
+        PaddingAdjustment adjustment = new PaddingAdjustment();
+        
+        if (isLandscape) {
+            // Landscape mode: status bar is typically on the right side
+            // Check if status bar is on the left or right based on navigation bar position
+            boolean isNavBarOnLeft = isNavigationBarOnLeft(activity);
+            
+            if (isNavBarOnLeft) {
+                // Status bar on left side, add to left padding
+                adjustment.left = statusBarHeight;
+            } else {
+                // Status bar on right side, add to right padding  
+                adjustment.right = statusBarHeight;
+            }
+            
+            // Small top padding to avoid any overlap
+            adjustment.top = Math.min(statusBarHeight / 4, 8);
+            
+        } else {
+            // Portrait mode: status bar is always on top
+            adjustment.top = statusBarHeight;
+        }
+        
+        return adjustment;
+    }
+    
+    /**
+     * Check if navigation bar is on the left side (some landscape layouts)
+     */
+    private boolean isNavigationBarOnLeft(Activity activity) {
+        try {
+            // Simple heuristic: check if device uses left-side navigation in landscape
+            return Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+    
+    /**
+     * Set up orientation change listener for dynamic adjustment
+     */
+    private void setupOrientationChangeListener(final Activity activity) {
+        try {
+            // Store original configuration
+            if (activity.getTag() == null) {
+                activity.setTag(activity.getResources().getConfiguration());
+            }
+            
+            // Override onConfigurationChanged for dynamic adjustment
+            XposedHelpers.findAndHookMethod(
+                Activity.class.getName(),
+                activity.getClassLoader(),
+                "onConfigurationChanged",
+                Configuration.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Configuration newConfig = (Configuration) param.args[0];
+                        Activity hookedActivity = (Activity) param.thisObject;
+                        
+                        // Check if orientation changed
+                        Configuration oldConfig = (Configuration) hookedActivity.getTag();
+                        if (oldConfig != null && oldConfig.orientation != newConfig.orientation) {
+                            XposedBridge.log(TAG + ": Orientation changed, readjusting padding");
+                            // Re-adjust padding for new orientation
+                            adjustRootViewPadding(hookedActivity);
+                        }
+                        
+                        // Update stored configuration
+                        hookedActivity.setTag(newConfig);
+                    }
+                }
+            );
+            
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Failed to setup orientation listener - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Class to hold padding adjustment values
+     */
+    private static class PaddingAdjustment {
+        int left = 0;
+        int top = 0;
+        int right = 0;
+        int bottom = 0;
     }
     
     /**

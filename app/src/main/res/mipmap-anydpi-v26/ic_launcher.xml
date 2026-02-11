@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Application icon -->
+    <mipmap
+        name="ic_launcher"
+        src="@mipmap/ic_launcher" />
+</resources>
