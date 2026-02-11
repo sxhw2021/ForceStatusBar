@@ -120,7 +120,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 }
             );
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to hook clearFlags - " + + e.getMessage());
+            XposedBridge.log(TAG + ": Failed to hook clearFlags - " + e.getMessage());
         }
         
         // Hook setAttributes method
