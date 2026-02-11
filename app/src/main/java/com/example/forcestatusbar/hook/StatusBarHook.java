@@ -30,7 +30,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     private static final String TAG = "ForceStatusBar";
     private static Handler mainHandler = null;
     
-    private static final java.util.Map<View, GuardInfo> guardedViews = new WeakHashMap<>();
+    private static final java.util.Map<Activity, GuardInfo> guardedActivities = new WeakHashMap<>();
     
     private static class GuardInfo {
         final Activity activity;
@@ -414,8 +414,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     private void startGuarding(final Activity activity) {
         if (activity == null || activity.isFinishing()) return;
 
-        synchronized (guardedViews) {
-            GuardInfo existing = guardedViews.get(activity);
+        synchronized (guardedActivities) {
+            GuardInfo existing = guardedActivities.get(activity);
             if (existing != null) {
                 existing.lastCheck = System.currentTimeMillis();
                 existing.isActive = true;
@@ -423,7 +423,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             }
 
             GuardInfo guardInfo = new GuardInfo(activity);
-            guardedViews.put(activity, guardInfo);
+            guardedActivities.put(activity, guardInfo);
 
             if (mainHandler != null) {
                 mainHandler.post(() -> {
