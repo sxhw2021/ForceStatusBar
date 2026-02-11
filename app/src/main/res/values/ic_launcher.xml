@@ -1,4 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 应用图标 - 请自行添加 mipmap-hdpi/ic_launcher.png -->
+    <mipmap name="ic_launcher" />
 </resources>
