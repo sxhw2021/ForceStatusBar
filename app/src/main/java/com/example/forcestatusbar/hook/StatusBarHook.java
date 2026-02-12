@@ -226,24 +226,32 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         Activity activity = (Activity) param.thisObject;
                         Window window = activity.getWindow();
                         
-                        // Clear fullscreen flags
+                        // Clear ALL fullscreen-related flags aggressively
                         window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
                         window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
                         window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
                         
-                        // Force show status bar
+                        // Force show status bar with multiple flags
                         window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                         
-                        // Ensure window respects system UI (crucial for content positioning)
+                        // CRITICAL: Ensure window respects system UI boundaries
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            // For Android 11+, don't use edge-to-edge to avoid overlap
+                            // Android 11+: FORCE the window to fit system windows
                             window.setDecorFitsSystemWindows(true);
+                            
+                            // Also try to set window attributes for maximum compatibility
+                            WindowManager.LayoutParams attrs = window.getAttributes();
+                            attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
+                            window.setAttributes(attrs);
                         } else {
-                            // For older versions, adjust window attributes
+                            // For older versions, set comprehensive window attributes
                             WindowManager.LayoutParams attrs = window.getAttributes();
                             attrs.flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
                             attrs.flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
                             attrs.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
                             window.setAttributes(attrs);
                         }
                         
@@ -288,6 +296,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             @Override
                             public void run() {
                                 adjustRootViewPadding(activity);
+                                forceContentMargin(activity);
                             }
                         });
                         
@@ -381,24 +390,81 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 
                 int[] originalPadding = (int[]) rootView.getTag();
                 
-                // NEW: Thanks to DisplayMetrics deception, apps will automatically leave space
-                // Only add minimal safety padding to prevent edge cases
+                // AGGRESSIVE: Apply full status bar height to ensure content is visible
                 boolean isLandscape = isLandscapeOrientation(activity);
-                int topPadding = isLandscape ? Math.min(statusBarHeight / 8, 4) : Math.min(statusBarHeight / 4, 8);
+                int topPadding = isLandscape ? statusBarHeight / 2 : statusBarHeight;
                 
-                // Apply minimal adjusted padding
+                // Apply strong padding to avoid any overlap
                 rootView.setPadding(
                     originalPadding[0],
-                    originalPadding[1] + topPadding,
+                    topPadding,  // Use full or half status bar height
                     originalPadding[2],
                     originalPadding[3]
                 );
                 
-                XposedBridge.log(TAG + ": NEW: Applied minimal padding (thanks to DisplayMetrics deception) - Landscape: " + isLandscape + 
-                          ", Top padding: " + topPadding + "px");
+                XposedBridge.log(TAG + ": AGGRESSIVE: Applied strong padding - Landscape: " + isLandscape + 
+                          ", Status bar height: " + statusBarHeight + "px, Top padding: " + topPadding + "px");
             }
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to adjust padding - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Force content margin as additional backup solution
+     */
+    private void forceContentMargin(Activity activity) {
+        try {
+            Window window = activity.getWindow();
+            View decorView = window.getDecorView();
+            
+            // Try multiple approaches to find and modify content views
+            View contentView = decorView.findViewById(android.R.id.content);
+            if (contentView != null) {
+                int statusBarHeight = getStatusBarHeight(activity);
+                
+                // Approach 1: Direct margin on content view
+                if (contentView.getLayoutParams() instanceof android.view.ViewGroup.MarginLayoutParams) {
+                    android.view.ViewGroup.MarginLayoutParams params = 
+                        (android.view.ViewGroup.MarginLayoutParams) contentView.getLayoutParams();
+                    params.topMargin = Math.max(params.topMargin, statusBarHeight);
+                    contentView.setLayoutParams(params);
+                    XposedBridge.log(TAG + ": Set content view top margin to " + statusBarHeight + "px");
+                }
+                
+                // Approach 2: Force padding on first child
+                if (contentView instanceof android.view.ViewGroup) {
+                    android.view.ViewGroup viewGroup = (android.view.ViewGroup) contentView;
+                    if (viewGroup.getChildCount() > 0) {
+                        View firstChild = viewGroup.getChildAt(0);
+                        if (firstChild != null) {
+                            firstChild.setPadding(
+                                firstChild.getPaddingLeft(),
+                                Math.max(firstChild.getPaddingTop(), statusBarHeight),
+                                firstChild.getPaddingRight(),
+                                firstChild.getPaddingBottom()
+                            );
+                            XposedBridge.log(TAG + ": Set first child top padding to " + statusBarHeight + "px");
+                        }
+                    }
+                }
+                
+                // Approach 3: Set layout params with top margin
+                try {
+                    android.widget.FrameLayout.LayoutParams params = 
+                        new android.widget.FrameLayout.LayoutParams(
+                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
+                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT
+                        );
+                    params.setMargins(0, statusBarHeight, 0, 0);
+                    contentView.setLayoutParams(params);
+                    XposedBridge.log(TAG + ": Applied FrameLayout margin approach");
+                } catch (Exception e) {
+                    XposedBridge.log(TAG + ": FrameLayout margin approach failed - " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Failed to force content margin - " + e.getMessage());
         }
     }
     
