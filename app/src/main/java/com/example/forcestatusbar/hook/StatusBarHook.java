@@ -229,13 +229,22 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         // Clear fullscreen flags
                         window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
                         window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
                         
                         // Force show status bar
                         window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                         
-                        // Enable Edge-to-Edge layout (Android 11+)
+                        // Ensure window respects system UI (crucial for content positioning)
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            window.setDecorFitsSystemWindows(false);
+                            // For Android 11+, don't use edge-to-edge to avoid overlap
+                            window.setDecorFitsSystemWindows(true);
+                        } else {
+                            // For older versions, adjust window attributes
+                            WindowManager.LayoutParams attrs = window.getAttributes();
+                            attrs.flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
+                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
+                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
+                            window.setAttributes(attrs);
                         }
                         
                         // Adjust root view padding to avoid status bar overlap
@@ -273,6 +282,14 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                             window.setDecorFitsSystemWindows(false);
                         }
+                        
+                        // Delay padding adjustment to ensure layout is ready
+                        window.getDecorView().post(new Runnable() {
+                            @Override
+                            public void run() {
+                                adjustRootViewPadding(activity);
+                            }
+                        });
                         
                         XposedBridge.log(TAG + ": Activity.onCreate set status bar flags - " + lpparam.packageName);
                     }
@@ -700,6 +717,52 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             // Final fallback: 24dp
             android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
             return (int) (24 * metrics.density + 0.5f);
+        }
+    }
+    
+    /**
+     * Adjust root view padding to avoid status bar overlap
+     */
+    private void adjustRootViewPadding(Activity activity) {
+        try {
+            Window window = activity.getWindow();
+            View decorView = window.getDecorView();
+            
+            // Find the root content view
+            View contentView = decorView.findViewById(android.R.id.content);
+            if (contentView != null) {
+                // Get status bar height
+                int statusBarHeight = getStatusBarHeight(activity);
+                
+                // Check if content might overlap with status bar
+                if (contentView.getPaddingTop() < statusBarHeight / 2) {
+                    XposedBridge.log(TAG + ": Potential status bar overlap detected, adjusting padding by " + statusBarHeight + "px");
+                    
+                    // Apply padding to avoid status bar overlap
+                    contentView.setPadding(
+                        contentView.getPaddingLeft(),
+                        statusBarHeight,
+                        contentView.getPaddingRight(),
+                        contentView.getPaddingBottom()
+                    );
+                }
+            }
+            
+            // For Android 11+, ensure proper window inset handling
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                try {
+                    Object controller = window.getInsetsController();
+                    if (controller != null) {
+                        // Ensure system bars are properly handled
+                        XposedHelpers.callMethod(controller, "show", 
+                            Class.forName("android.view.WindowInsets$Type").getField("statusBars").get(null));
+                    }
+                } catch (Exception e) {
+                    XposedBridge.log(TAG + ": WindowInsets adjustment failed - " + e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Root view padding adjustment failed - " + e.getMessage());
         }
     }
 }
