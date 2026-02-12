@@ -175,17 +175,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         Activity activity = (Activity) param.thisObject;
                         Window window = activity.getWindow();
                         
-                        // Simple and safe: Force status bar visible
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                        window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
-                        
-                        // For older versions, set system UI visibility
-                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-                            View decorView = window.getDecorView();
-                            decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
-                        }
-                        
-                        // Force content view to handle system insets properly (includes Android R+ handling)
+                        // Force content view to handle system insets properly (includes immersive status bar)
                         forceContentViewFitsSystemWindows(activity);
                     }
                 }
@@ -207,11 +197,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         Activity activity = (Activity) param.thisObject;
                         Window window = activity.getWindow();
                         
-                        // Force status bar visibility
-                        window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                        
-                        // Force content view to handle system insets properly (includes Android R+ handling)
+                        // Force content view to handle system insets properly (includes immersive status bar)
                         forceContentViewFitsSystemWindows(activity);
                     }
                 }
@@ -267,11 +253,25 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     /**
      * Force content view to fit system windows properly
      * FIXED: Properly handle WindowInsets to prevent content overlap
+     * NEW: Support immersive status bar (transparent background)
      */
     private void forceContentViewFitsSystemWindows(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
+            
+            // Make status bar transparent (immersive mode)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                // Android 5.0+: Set status bar color to transparent
+                window.setStatusBarColor(android.graphics.Color.TRANSPARENT);
+                
+                // Enable layout in fullscreen (content extends to status bar)
+                int flags = View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
+                decorView.setSystemUiVisibility(flags);
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                // Android 4.4-5.0: Use translucent status bar flag
+                window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+            }
             
             // For Android 11+, use proper WindowInsets handling
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
@@ -300,7 +300,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     contentView.requestApplyInsets();
                 }
                 
-                XposedBridge.log(TAG + ": Enabled WindowInsets handling for content");
+                XposedBridge.log(TAG + ": Enabled immersive status bar (transparent)");
             } else {
                 // For older versions, use traditional fitsSystemWindows
                 View contentView = decorView.findViewById(android.R.id.content);
