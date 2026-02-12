@@ -22,6 +22,9 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     
     private static final String TAG = "ForceStatusBar";
     
+    // Recursion prevention for DisplayMetrics hooks
+    private static volatile boolean isInDisplayMetricsHook = false;
+    
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         hookWindowMethods(lpparam);
@@ -397,6 +400,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     /**
      * Hook DisplayMetrics APIs to "lie" about screen size
      * Core idea: Let apps think screen height = physical height - status bar height
+     * FIXED: Added null checks and defensive programming
      */
     private void hookDisplayMetrics(XC_LoadPackage.LoadPackageParam lpparam) {
         try {
@@ -409,30 +413,54 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        // Recursion prevention check
+                        if (isInDisplayMetricsHook) {
+                            return;  // Skip if we're already in a DisplayMetrics hook
+                        }
+                        
                         DisplayMetrics metrics = (DisplayMetrics) param.args[0];
                         if (metrics == null) return;
                         
+                        // FIXED: Add null check
                         Display display = (Display) param.thisObject;
+                        if (display == null) return;
                         
                         try {
+                            isInDisplayMetricsHook = true;
                             // Get real physical screen size
                             Point realSize = new Point();
-                            display.getRealSize(realSize);
                             
-                            // Get status bar height
-                            int statusBarHeight = getStatusBarHeightForDisplay(display);
-                            
-                            // Core deception: modify heightPixels
-                            int originalHeight = metrics.heightPixels;
-                            metrics.heightPixels = realSize.y - statusBarHeight;
-                            
-
-                            
-                            XposedBridge.log(TAG + ": Display.getMetrics() - Original: " + originalHeight + 
-                                          ", Modified: " + metrics.heightPixels + 
-                                          ", StatusBar: " + statusBarHeight + "px");
+                            // FIXED: Defensive programming - catch all exceptions
+                            if (realSize != null && realSize.x > 0 && realSize.y > 0) {
+                                // Get status bar height
+                                int statusBarHeight = getStatusBarHeightForDisplay(display);
+                                
+                                // Core deception: modify heightPixels (with safety checks)
+                                int originalHeight = metrics.heightPixels;
+                                int modifiedHeight = realSize.y - statusBarHeight;
+                                
+                                // Safety check: don't make height negative
+                                if (modifiedHeight < 0) {
+                                    modifiedHeight = originalHeight; // Revert to original
+                                }
+                                
+                                // Safety check: reasonable limits (can't reduce height by more than 50%)
+                                int maxReduction = originalHeight / 2;
+                                if (modifiedHeight < originalHeight - maxReduction) {
+                                    modifiedHeight = originalHeight - maxReduction;
+                                }
+                                
+                                // Apply the modification
+                                metrics.heightPixels = modifiedHeight;
+                                
+                                XposedBridge.log(TAG + ": Display.getMetrics() - SAFE: " + originalHeight + 
+                                              ", Modified: " + modifiedHeight + 
+                                              ", StatusBar: " + statusBarHeight + "px");
+                            }
                         } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Failed to modify Display.getMetrics() - " + e.getMessage());
+                            XposedBridge.log(TAG + ": Display.getMetrics() - Exception: " + e.getMessage());
+                        } finally {
+                            isInDisplayMetricsHook = false;
                         }
                     }
                 }
@@ -447,6 +475,76 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        // Recursion prevention check
+                        if (isInDisplayMetricsHook) {
+                            return;  // Skip if we're already in a DisplayMetrics hook
+                        }
+                        
+                        // Apply same deception as getMetrics() with safety checks
+                        DisplayMetrics metrics = (DisplayMetrics) param.args[0];
+                        if (metrics == null) return;
+                        
+                        Display display = (Display) param.thisObject;
+                        if (display == null) return;
+                        
+                        try {
+                            isInDisplayMetricsHook = true;
+                            Point realSize = new Point();
+                            
+                            // Defensive programming for getRealSize
+                            if (realSize != null && realSize.x > 0 && realSize.y > 0) {
+                                // Get status bar height
+                                int statusBarHeight = getStatusBarHeightForDisplay(display);
+                                
+                                int originalHeight = metrics.heightPixels;
+                                int modifiedHeight = realSize.y - statusBarHeight;
+                                
+                                // Safety checks for getRealSize too
+                                if (modifiedHeight < 0) {
+                                    modifiedHeight = originalHeight;
+                                } else if (modifiedHeight < originalHeight / 2) {
+                                    modifiedHeight = originalHeight / 2;
+                                }
+                                
+                                metrics.heightPixels = modifiedHeight;
+                                
+                                XposedBridge.log(TAG + ": Display.getRealSize() - SAFE: " + originalHeight + 
+                                              ", Modified: " + modifiedHeight + 
+                                              ", StatusBar: " + statusBarHeight + "px");
+                            }
+                        } catch (Exception e) {
+                            XposedBridge.log(TAG + ": Display.getRealSize() - Exception: " + e.getMessage());
+                        } finally {
+                            isInDisplayMetricsHook = false;
+                        }
+                    }
+                }
+            );
+            
+            XposedBridge.log(TAG + ": DisplayMetrics hooks installed successfully");
+            
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Failed to install DisplayMetrics hooks - " + e.getMessage());
+        }
+    }
+                    }
+                }
+            );
+            
+            // Hook Display.getRealMetrics() - API 17+
+            XposedHelpers.findAndHookMethod(
+                "android.view.Display",
+                lpparam.classLoader,
+                "getRealMetrics",
+                DisplayMetrics.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        // Recursion prevention check
+                        if (isInDisplayMetricsHook) {
+                            return;  // Skip if we're already in a DisplayMetrics hook
+                        }
+                        
                         // Apply same deception as getMetrics()
                         DisplayMetrics metrics = (DisplayMetrics) param.args[0];
                         if (metrics == null) return;
@@ -454,6 +552,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         Display display = (Display) param.thisObject;
                         
                         try {
+                            isInDisplayMetricsHook = true;
                             Point realSize = new Point();
                             display.getRealSize(realSize);
                             
@@ -461,13 +560,15 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             int originalHeight = metrics.heightPixels;
                             metrics.heightPixels = realSize.y - statusBarHeight;
                             
-
+                            
                             
                             XposedBridge.log(TAG + ": Display.getRealMetrics() - Original: " + originalHeight + 
                                           ", Modified: " + metrics.heightPixels + 
                                           ", StatusBar: " + statusBarHeight + "px");
                         } catch (Exception e) {
                             XposedBridge.log(TAG + ": Failed to modify Display.getRealMetrics() - " + e.getMessage());
+                        } finally {
+                            isInDisplayMetricsHook = false;
                         }
                     }
                 }
@@ -494,12 +595,18 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        // Recursion prevention check
+                        if (isInDisplayMetricsHook) {
+                            return;  // Skip if we're already in a DisplayMetrics hook
+                        }
+                        
                         Point size = (Point) param.args[0];
                         if (size == null) return;
                         
                         Display display = (Display) param.thisObject;
                         
                         try {
+                            isInDisplayMetricsHook = true;
                             // Get real size first
                             Point realSize = new Point();
                             display.getRealSize(realSize);
@@ -516,6 +623,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                                           ", StatusBar: " + statusBarHeight + "px");
                         } catch (Exception e) {
                             XposedBridge.log(TAG + ": Failed to modify Display.getSize() - " + e.getMessage());
+                        } finally {
+                            isInDisplayMetricsHook = false;
                         }
                     }
                 }
@@ -530,12 +639,18 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        // Recursion prevention check
+                        if (isInDisplayMetricsHook) {
+                            return;  // Skip if we're already in a DisplayMetrics hook
+                        }
+                        
                         Point size = (Point) param.args[0];
                         if (size == null) return;
                         
                         Display display = (Display) param.thisObject;
                         
                         try {
+                            isInDisplayMetricsHook = true;
                             // Get real size
                             Point realSize = new Point();
                             display.getRealSize(realSize);
@@ -552,6 +667,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                                           ", StatusBar: " + statusBarHeight + "px");
                         } catch (Exception e) {
                             XposedBridge.log(TAG + ": Failed to modify Display.getRealSize() - " + e.getMessage());
+                        } finally {
+                            isInDisplayMetricsHook = false;
                         }
                     }
                 }
