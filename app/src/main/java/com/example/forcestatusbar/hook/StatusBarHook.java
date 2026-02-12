@@ -4,7 +4,9 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.res.Configuration;
 import android.os.Build;
+import android.graphics.Point;
 import android.util.DisplayMetrics;
+import android.view.Display;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -25,12 +27,16 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         hookDecorView(lpparam);
         hookActivityLifecycle(lpparam);
         
+        // NEW: Hook Display APIs to "lie" about screen size
+        hookDisplayMetrics(lpparam);
+        hookDisplaySize(lpparam);
+        
         // Android 11+ use WindowInsetsController
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             hookWindowInsetsControllerImpl(lpparam);
         }
         
-        XposedBridge.log(TAG + ": Initialized - " + lpparam.packageName);
+        XposedBridge.log(TAG + ": Initialized with DisplayMetrics deception - " + lpparam.packageName);
     }
     
     private void hookWindowMethods(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -319,8 +325,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * Simplified approach: adjust root layout padding to avoid status bar overlap
-     * Focus on minimizing touch offset while maintaining functionality
+     * NEW: Simplified padding adjustment thanks to DisplayMetrics deception
+     * Apps will think screen is smaller, so minimal padding needed
      */
     private void adjustRootViewPadding(Activity activity) {
         try {
@@ -331,6 +337,49 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             if (contentView == null || contentView.getChildCount() == 0) {
                 return;
             }
+            
+            // Get root view
+            View rootView = contentView.getChildAt(0);
+            if (rootView == null) {
+                return;
+            }
+            
+            // Get status bar height
+            int statusBarHeight = getStatusBarHeight(activity);
+            
+            if (statusBarHeight > 0) {
+                // Store original padding if not already stored
+                if (rootView.getTag() == null) {
+                    rootView.setTag(new int[]{
+                        rootView.getPaddingLeft(),
+                        rootView.getPaddingTop(),
+                        rootView.getPaddingRight(),
+                        rootView.getPaddingBottom()
+                    });
+                }
+                
+                int[] originalPadding = (int[]) rootView.getTag();
+                
+                // NEW: Thanks to DisplayMetrics deception, apps will automatically leave space
+                // Only add minimal safety padding to prevent edge cases
+                boolean isLandscape = isLandscapeOrientation(activity);
+                int topPadding = isLandscape ? Math.min(statusBarHeight / 8, 4) : Math.min(statusBarHeight / 4, 8);
+                
+                // Apply minimal adjusted padding
+                rootView.setPadding(
+                    originalPadding[0],
+                    originalPadding[1] + topPadding,
+                    originalPadding[2],
+                    originalPadding[3]
+                );
+                
+                XposedBridge.log(TAG + ": NEW: Applied minimal padding (thanks to DisplayMetrics deception) - Landscape: " + isLandscape + 
+                          ", Top padding: " + topPadding + "px");
+            }
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Failed to adjust padding - " + e.getMessage());
+        }
+    }
             
             // Get the root view
             View rootView = contentView.getChildAt(0);
@@ -386,6 +435,224 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         }
     }
     
+    /**
+     * Hook DisplayMetrics APIs to "lie" about screen size
+     * Core idea: Let apps think screen height = physical height - status bar height
+     */
+    private void hookDisplayMetrics(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            // Hook Display.getMetrics() - API 1+
+            XposedHelpers.findAndHookMethod(
+                "android.view.Display",
+                lpparam.classLoader,
+                "getMetrics",
+                android.graphics.DisplayMetrics.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        android.graphics.DisplayMetrics metrics = (android.graphics.DisplayMetrics) param.args[0];
+                        if (metrics == null) return;
+                        
+                        android.view.Display display = (android.view.Display) param.thisObject;
+                        
+                        try {
+                            // Get real physical screen size
+                            android.graphics.Point realSize = new android.graphics.Point();
+                            display.getRealSize(realSize);
+                            
+                            // Get status bar height
+                            int statusBarHeight = getStatusBarHeightForDisplay(display);
+                            
+                            // Core deception: modify heightPixels
+                            int originalHeight = metrics.heightPixels;
+                            metrics.heightPixels = realSize.y - statusBarHeight;
+                            
+                            // Also modify noncompatHeightPixels if available
+                            try {
+                                java.lang.reflect.Field field = android.graphics.DisplayMetrics.class.getDeclaredField("noncompatHeightPixels");
+                                field.setAccessible(true);
+                                field.set(metrics, metrics.heightPixels);
+                            } catch (Exception ignored) {}
+                            
+                            XposedBridge.log(TAG + ": Display.getMetrics() - Original: " + originalHeight + 
+                                          ", Modified: " + metrics.heightPixels + 
+                                          ", StatusBar: " + statusBarHeight + "px");
+                        } catch (Exception e) {
+                            XposedBridge.log(TAG + ": Failed to modify Display.getMetrics() - " + e.getMessage());
+                        }
+                    }
+                }
+            );
+            
+            // Hook Display.getRealMetrics() - API 17+
+            XposedHelpers.findAndHookMethod(
+                "android.view.Display",
+                lpparam.classLoader,
+                "getRealMetrics",
+                android.graphics.DisplayMetrics.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        // Apply the same deception as getMetrics()
+                        android.graphics.DisplayMetrics metrics = (android.graphics.DisplayMetrics) param.args[0];
+                        if (metrics == null) return;
+                        
+                        android.view.Display display = (android.view.Display) param.thisObject;
+                        
+                        try {
+                            android.graphics.Point realSize = new android.graphics.Point();
+                            display.getRealSize(realSize);
+                            
+                            int statusBarHeight = getStatusBarHeightForDisplay(display);
+                            int originalHeight = metrics.heightPixels;
+                            metrics.heightPixels = realSize.y - statusBarHeight;
+                            
+                            // Also modify noncompatHeightPixels if available
+                            try {
+                                java.lang.reflect.Field field = android.graphics.DisplayMetrics.class.getDeclaredField("noncompatHeightPixels");
+                                field.setAccessible(true);
+                                field.set(metrics, metrics.heightPixels);
+                            } catch (Exception ignored) {}
+                            
+                            XposedBridge.log(TAG + ": Display.getRealMetrics() - Original: " + originalHeight + 
+                                          ", Modified: " + metrics.heightPixels + 
+                                          ", StatusBar: " + statusBarHeight + "px");
+                        } catch (Exception e) {
+                            XposedBridge.log(TAG + ": Failed to modify Display.getRealMetrics() - " + e.getMessage());
+                        }
+                    }
+                }
+            );
+            
+            XposedBridge.log(TAG + ": DisplayMetrics hooks installed successfully");
+            
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Failed to install DisplayMetrics hooks - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Hook Display.getSize() and getRealSize() methods
+     */
+    private void hookDisplaySize(XC_LoadPackage.LoadPackageParam lpparam) {
+        try {
+            // Hook Display.getSize() - API 13+
+            XposedHelpers.findAndHookMethod(
+                "android.view.Display",
+                lpparam.classLoader,
+                "getSize",
+                android.graphics.Point.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        android.graphics.Point size = (android.graphics.Point) param.args[0];
+                        if (size == null) return;
+                        
+                        android.view.Display display = (android.view.Display) param.thisObject;
+                        
+                        try {
+                            // Get real size first
+                            android.graphics.Point realSize = new android.graphics.Point();
+                            display.getRealSize(realSize);
+                            
+                            // Get status bar height
+                            int statusBarHeight = getStatusBarHeightForDisplay(display);
+                            
+                            // Modify the size
+                            int originalY = size.y;
+                            size.y = realSize.y - statusBarHeight;
+                            
+                            XposedBridge.log(TAG + ": Display.getSize() - Original Y: " + originalY + 
+                                          ", Modified Y: " + size.y + 
+                                          ", StatusBar: " + statusBarHeight + "px");
+                        } catch (Exception e) {
+                            XposedBridge.log(TAG + ": Failed to modify Display.getSize() - " + e.getMessage());
+                        }
+                    }
+                }
+            );
+            
+            // Hook Display.getRealSize() - API 17+
+            XposedHelpers.findAndHookMethod(
+                "android.view.Display",
+                lpparam.classLoader,
+                "getRealSize",
+                android.graphics.Point.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        android.graphics.Point size = (android.graphics.Point) param.args[0];
+                        if (size == null) return;
+                        
+                        android.view.Display display = (android.view.Display) param.thisObject;
+                        
+                        try {
+                            // Get real size
+                            android.graphics.Point realSize = new android.graphics.Point();
+                            display.getRealSize(realSize);
+                            
+                            // Get status bar height
+                            int statusBarHeight = getStatusBarHeightForDisplay(display);
+                            
+                            // Modify the real size to match our deception
+                            int originalY = size.y;
+                            size.y = realSize.y - statusBarHeight;
+                            
+                            XposedBridge.log(TAG + ": Display.getRealSize() - Original Y: " + originalY + 
+                                          ", Modified Y: " + size.y + 
+                                          ", StatusBar: " + statusBarHeight + "px");
+                        } catch (Exception e) {
+                            XposedBridge.log(TAG + ": Failed to modify Display.getRealSize() - " + e.getMessage());
+                        }
+                    }
+                }
+            );
+            
+            XposedBridge.log(TAG + ": Display size hooks installed successfully");
+            
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Failed to install Display size hooks - " + e.getMessage());
+        }
+    }
+    
+    /**
+     * Get status bar height for Display object using multiple fallback methods
+     */
+    private int getStatusBarHeightForDisplay(android.view.Display display) {
+        try {
+            // Try to get context from Display
+            Object windowManager = XposedHelpers.callMethod(display, "getWindowManager");
+            if (windowManager != null) {
+                Context context = (Context) XposedHelpers.callMethod(windowManager, "getContext");
+                if (context != null) {
+                    return getStatusBarHeight(context);
+                }
+            }
+        } catch (Exception e) {
+            // Fallback to global context method
+        }
+        
+        // Fallback: try to get ActivityThread context
+        try {
+            Object activityThread = XposedHelpers.callStaticMethod(XposedHelpers.findClass("android.app.ActivityThread", null), "currentActivityThread");
+            Context context = (Context) XposedHelpers.callMethod(activityThread, "getSystemContext");
+            if (context != null) {
+                return getStatusBarHeight(context);
+            }
+        } catch (Exception e) {
+            // Final fallback
+        }
+        
+        // Ultimate fallback: use 24dp * density
+        try {
+            android.graphics.DisplayMetrics metrics = new android.graphics.DisplayMetrics();
+            display.getMetrics(metrics);
+            return (int) (24 * metrics.density + 0.5f);
+        } catch (Exception e) {
+            return 48; // Hardcoded fallback
+        }
+    }
+
     /**
      * Get status bar height using multiple fallback methods
      */
