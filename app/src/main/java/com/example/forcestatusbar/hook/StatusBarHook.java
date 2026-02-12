@@ -28,7 +28,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         hookDecorView(lpparam);
         hookActivityLifecycle(lpparam);
         
-        // REMOVED: Display size deception - causes touch coordinate offset
+        // REMOVED: Display size deception - causes touch offset
         // hookDisplayMetrics(lpparam);
         // hookDisplaySize(lpparam);
         
@@ -55,23 +55,17 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         int flags = (int) param.args[0];
                         int mask = (int) param.args[1];
                         
-                        boolean modified = false;
-                        
-                        // Check if FLAG_FULLSCREEN is set
-                        if ((mask & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
+                        // If setting FLAG_FULLSCREEN, block it
+                        if ((flags & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
                             flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
-                            modified = true;
-                        }
-                        
-                        // Remove FLAG_LAYOUT_NO_LIMITS
-                        if ((mask & WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) != 0) {
-                            flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-                            modified = true;
-                        }
-                        
-                        if (modified) {
                             param.args[0] = flags;
-                            XposedBridge.log(TAG + ": Intercepted setFlags - " + lpparam.packageName);
+                            XposedBridge.log(TAG + ": Intercepted setFlags FLAG_FULLSCREEN - " + lpparam.packageName);
+                        }
+                        
+                        // Force add FLAG_FORCE_NOT_FULLSCREEN
+                        if ((flags & WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN) == 0) {
+                            flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
+                            param.args[0] = flags;
                         }
                     }
                 }
@@ -128,48 +122,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             );
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to hook clearFlags - " + e.getMessage());
-        }
-        
-        // Hook setAttributes method
-        try {
-            XposedHelpers.findAndHookMethod(
-                Window.class.getName(),
-                lpparam.classLoader,
-                "setAttributes",
-                WindowManager.LayoutParams.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void beforeHookedMethod(MethodHookParam param) throws Throwable {
-                        WindowManager.LayoutParams attrs = (WindowManager.LayoutParams) param.args[0];
-                        if (attrs != null) {
-                            boolean modified = false;
-                            
-                            // Remove fullscreen flags
-                            if ((attrs.flags & WindowManager.LayoutParams.FLAG_FULLSCREEN) != 0) {
-                                attrs.flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
-                                modified = true;
-                            }
-                            
-                            if ((attrs.flags & WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS) != 0) {
-                                attrs.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-                                modified = true;
-                            }
-                            
-                            // Force add FLAG_FORCE_NOT_FULLSCREEN
-                            if ((attrs.flags & WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN) == 0) {
-                                attrs.flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
-                                modified = true;
-                            }
-                            
-                            if (modified) {
-                                XposedBridge.log(TAG + ": Intercepted setAttributes - " + lpparam.packageName);
-                            }
-                        }
-                    }
-                }
-            );
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to hook setAttributes - " + e.getMessage());
         }
     }
     
@@ -231,14 +183,13 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                             window.setDecorFitsSystemWindows(true);
                         } else {
+                            // For older versions, set system UI visibility
                             View decorView = window.getDecorView();
                             decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
                         }
                         
                         // Force content view to handle system insets properly
                         forceContentViewFitsSystemWindows(activity);
-                        
-                        XposedBridge.log(TAG + ": Activity.onResume forced status bar - " + lpparam.packageName);
                     }
                 }
             );
@@ -270,8 +221,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         
                         // Force content view to handle system insets properly
                         forceContentViewFitsSystemWindows(activity);
-                        
-                        XposedBridge.log(TAG + ": Activity.onCreate set status bar flags - " + lpparam.packageName);
                     }
                 }
             );
@@ -300,84 +249,26 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             // Try to get statusBars type
                             int statusBars = 0;
                             try {
-                                Class<?> typeClass = XposedHelpers.findClass(
-                                    "android.view.WindowInsets$Type", 
-                                    lpparam.classLoader
-                                );
-                                statusBars = (int) XposedHelpers.callStaticMethod(typeClass, "statusBars");
-                            } catch (Exception ignored) {}
+                                Class<?> insetsTypeClass = Class.forName("android.view.WindowInsets$Type");
+                                statusBars = insetsTypeClass.getField("statusBars").getInt(null);
+                            } catch (Exception e) {
+                                // Fallback: use hardcoded status bar type
+                                statusBars = 1; // Usually WindowInsets.Type.statusBars()
+                            }
                             
-                            // If trying to hide status bar, block it
-                            if (statusBars != 0 && (types & statusBars) != 0) {
-                                types &= ~statusBars;
-                                param.args[0] = types;
-                                XposedBridge.log(TAG + ": Intercepted WindowInsetsControllerImpl.hide(status bar) - " + lpparam.packageName);
+                            // If trying to hide status bars, block it
+                            if ((types & statusBars) != 0) {
+                                param.setResult(null);
+                                XposedBridge.log(TAG + ": Blocked WindowInsetsController.hide(statusBars) - " + lpparam.packageName);
                             }
                         }
                     });
                     
-                    XposedBridge.log(TAG + ": Successfully hooked WindowInsetsController implementation - " + className);
-                    break; // Exit after success
+                    XposedBridge.log(TAG + ": Successfully hooked " + className + " for status bar protection");
                 }
             } catch (Exception e) {
-                // Try next class
+                XposedBridge.log(TAG + ": Failed to hook " + className + " - " + e.getMessage());
             }
-        }
-    }
-    
-    /**
-     * NEW: Simplified padding adjustment thanks to DisplayMetrics deception
-     * Apps will think screen is smaller, so minimal padding needed
-     */
-    private void adjustRootViewPadding(Activity activity) {
-        try {
-            Window window = activity.getWindow();
-            View decorView = window.getDecorView();
-            android.view.ViewGroup contentView = (android.view.ViewGroup) decorView.findViewById(android.R.id.content);
-            
-            if (contentView == null || contentView.getChildCount() == 0) {
-                return;
-            }
-            
-            // Get root view
-            View rootView = contentView.getChildAt(0);
-            if (rootView == null) {
-                return;
-            }
-            
-            // Get status bar height
-            int statusBarHeight = getStatusBarHeight(activity);
-            
-            if (statusBarHeight > 0) {
-                // Store original padding if not already stored
-                if (rootView.getTag() == null) {
-                    rootView.setTag(new int[]{
-                        rootView.getPaddingLeft(),
-                        rootView.getPaddingTop(),
-                        rootView.getPaddingRight(),
-                        rootView.getPaddingBottom()
-                    });
-                }
-                
-                int[] originalPadding = (int[]) rootView.getTag();
-                
-                // CONSERVATIVE: Apply moderate status bar height to ensure content is visible
-                boolean isLandscape = isLandscapeOrientation(activity);
-                int topPadding = isLandscape ? Math.min(statusBarHeight / 3, 15) : Math.min(statusBarHeight / 2, 30);
-                
-                // Apply conservative padding to avoid overlap
-                rootView.setPadding(
-                    originalPadding[0],
-                    originalPadding[1] + topPadding,
-                    originalPadding[2],
-                    originalPadding[3]
-                );
-                
-                XposedBridge.log(TAG + ": CONSERVATIVE: Applied moderate padding - Landscape: " + isLandscape + 
-                          ", Status bar height: " + statusBarHeight + "px, Top padding: " + topPadding + "px");
-            }
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to adjust padding - " + e.getMessage());
         }
     }
     
@@ -416,164 +307,4 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": Failed to force content view fitsSystemWindows - " + e.getMessage());
         }
     }
-    
-
-    }
-    
-
-                        
-                        DisplayMetrics metrics = (DisplayMetrics) param.args[0];
-                        if (metrics == null) return;
-                        
-                        // FIXED: Add null check
-                        Display display = (Display) param.thisObject;
-                        if (display == null) return;
-                        
-                        try {
-                            isInDisplayMetricsHook = true;
-                            // Get real physical screen size
-                            Point realSize = new Point();
-                            
-                            // FIXED: Defensive programming - catch all exceptions
-                            if (realSize != null && realSize.x > 0 && realSize.y > 0) {
-                                // Get status bar height
-                                int statusBarHeight = getStatusBarHeightForDisplay(display);
-                                
-                                // Core deception: modify heightPixels (with safety checks)
-                                int originalHeight = metrics.heightPixels;
-                                int modifiedHeight = realSize.y - statusBarHeight;
-                                
-                                // Safety check: don't make height negative
-                                if (modifiedHeight < 0) {
-                                    modifiedHeight = originalHeight; // Revert to original
-                                }
-                                
-                                // Safety check: reasonable limits (can't reduce height by more than 50%)
-                                int maxReduction = originalHeight / 2;
-                                if (modifiedHeight < originalHeight - maxReduction) {
-                                    modifiedHeight = originalHeight - maxReduction;
-                                }
-                                
-                                // Apply the modification
-                                metrics.heightPixels = modifiedHeight;
-                                
-                                XposedBridge.log(TAG + ": Display.getMetrics() - SAFE: " + originalHeight + 
-                                              ", Modified: " + modifiedHeight + 
-                                              ", StatusBar: " + statusBarHeight + "px");
-                            }
-                        } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Display.getMetrics() - Exception: " + e.getMessage());
-                        } finally {
-                            isInDisplayMetricsHook = false;
-                        }
-                    }
-                }
-            );
-            
-            // Hook Display.getRealMetrics() - API 17+
-            XposedHelpers.findAndHookMethod(
-                "android.view.Display",
-                lpparam.classLoader,
-                "getRealMetrics",
-                DisplayMetrics.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // Recursion prevention check
-                        if (isInDisplayMetricsHook) {
-                            return;  // Skip if we're already in a DisplayMetrics hook
-                        }
-                        
-                        // Apply same deception as getMetrics() with safety checks
-                        DisplayMetrics metrics = (DisplayMetrics) param.args[0];
-                        if (metrics == null) return;
-                        
-                        Display display = (Display) param.thisObject;
-                        if (display == null) return;
-                        
-                        try {
-                            isInDisplayMetricsHook = true;
-                            Point realSize = new Point();
-                            
-                            // Defensive programming for getRealSize
-                            if (realSize != null && realSize.x > 0 && realSize.y > 0) {
-                                // Get status bar height
-                                int statusBarHeight = getStatusBarHeightForDisplay(display);
-                                
-                                int originalHeight = metrics.heightPixels;
-                                int modifiedHeight = realSize.y - statusBarHeight;
-                                
-                                // Safety checks for getRealSize too
-                                if (modifiedHeight < 0) {
-                                    modifiedHeight = originalHeight;
-                                } else if (modifiedHeight < originalHeight / 2) {
-                                    modifiedHeight = originalHeight / 2;
-                                }
-                                
-                                metrics.heightPixels = modifiedHeight;
-                                
-                                XposedBridge.log(TAG + ": Display.getRealSize() - SAFE: " + originalHeight + 
-                                              ", Modified: " + modifiedHeight + 
-                                              ", StatusBar: " + statusBarHeight + "px");
-                            }
-                        } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Display.getRealSize() - Exception: " + e.getMessage());
-                        } finally {
-                            isInDisplayMetricsHook = false;
-                        }
-                    }
-                }
-            );
-            
-            XposedBridge.log(TAG + ": DisplayMetrics hooks installed successfully");
-            
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to install DisplayMetrics hooks - " + e.getMessage());
-        }
-    }
-    
-
-    
-
-
-    /**
-     * Get status bar height using multiple fallback methods
-     */
-    private int getStatusBarHeight(Context context) {
-        try {
-            // Method 1: System resources
-            int result = 0;
-            int resourceId = context.getResources().getIdentifier("status_bar_height", "dimen", "android");
-            if (resourceId > 0) {
-                result = context.getResources().getDimensionPixelSize(resourceId);
-            }
-            
-            // Method 2: Internal resources (fallback)
-            if (result == 0) {
-                try {
-                    Class<?> c = Class.forName("com.android.internal.R$dimen");
-                    Object obj = c.newInstance();
-                    java.lang.reflect.Field field = c.getField("status_bar_height");
-                    result = context.getResources().getDimensionPixelSize(Integer.parseInt(field.get(obj).toString()));
-                } catch (Exception ignored) {}
-            }
-            
-            // Method 3: Default based on screen density
-            if (result == 0) {
-                android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-                float dp = metrics.density <= 1.0f ? 24f : 
-                          metrics.density <= 2.0f ? 25f : 
-                          metrics.density <= 3.0f ? 26f : 28f;
-                result = (int) (dp * metrics.density + 0.5f);
-            }
-            
-            return result;
-        } catch (Exception e) {
-            // Final fallback: 24dp
-            android.util.DisplayMetrics metrics = context.getResources().getDisplayMetrics();
-            return (int) (24 * metrics.density + 0.5f);
-        }
-    }
-    
-
 }
