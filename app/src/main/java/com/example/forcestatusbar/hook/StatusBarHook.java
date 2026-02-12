@@ -390,19 +390,19 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 
                 int[] originalPadding = (int[]) rootView.getTag();
                 
-                // AGGRESSIVE: Apply full status bar height to ensure content is visible
+                // CONSERVATIVE: Apply moderate status bar height to ensure content is visible
                 boolean isLandscape = isLandscapeOrientation(activity);
-                int topPadding = isLandscape ? statusBarHeight / 2 : statusBarHeight;
+                int topPadding = isLandscape ? Math.min(statusBarHeight / 3, 15) : Math.min(statusBarHeight / 2, 30);
                 
-                // Apply strong padding to avoid any overlap
+                // Apply conservative padding to avoid overlap
                 rootView.setPadding(
                     originalPadding[0],
-                    topPadding,  // Use full or half status bar height
+                    originalPadding[1] + topPadding,
                     originalPadding[2],
                     originalPadding[3]
                 );
                 
-                XposedBridge.log(TAG + ": AGGRESSIVE: Applied strong padding - Landscape: " + isLandscape + 
+                XposedBridge.log(TAG + ": CONSERVATIVE: Applied moderate padding - Landscape: " + isLandscape + 
                           ", Status bar height: " + statusBarHeight + "px, Top padding: " + topPadding + "px");
             }
         } catch (Exception e) {
@@ -411,60 +411,38 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * Force content margin as additional backup solution
+     * Safe content adjustment approach
      */
     private void forceContentMargin(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
-            // Try multiple approaches to find and modify content views
+            // Only use safe padding approach
             View contentView = decorView.findViewById(android.R.id.content);
-            if (contentView != null) {
-                int statusBarHeight = getStatusBarHeight(activity);
-                
-                // Approach 1: Direct margin on content view
-                if (contentView.getLayoutParams() instanceof android.view.ViewGroup.MarginLayoutParams) {
-                    android.view.ViewGroup.MarginLayoutParams params = 
-                        (android.view.ViewGroup.MarginLayoutParams) contentView.getLayoutParams();
-                    params.topMargin = Math.max(params.topMargin, statusBarHeight);
-                    contentView.setLayoutParams(params);
-                    XposedBridge.log(TAG + ": Set content view top margin to " + statusBarHeight + "px");
-                }
-                
-                // Approach 2: Force padding on first child
-                if (contentView instanceof android.view.ViewGroup) {
-                    android.view.ViewGroup viewGroup = (android.view.ViewGroup) contentView;
-                    if (viewGroup.getChildCount() > 0) {
-                        View firstChild = viewGroup.getChildAt(0);
-                        if (firstChild != null) {
+            if (contentView != null && contentView instanceof android.view.ViewGroup) {
+                android.view.ViewGroup viewGroup = (android.view.ViewGroup) contentView;
+                if (viewGroup.getChildCount() > 0) {
+                    View firstChild = viewGroup.getChildAt(0);
+                    if (firstChild != null) {
+                        int statusBarHeight = getStatusBarHeight(activity);
+                        int currentTop = firstChild.getPaddingTop();
+                        
+                        // Only add padding if needed
+                        if (currentTop < statusBarHeight) {
                             firstChild.setPadding(
                                 firstChild.getPaddingLeft(),
-                                Math.max(firstChild.getPaddingTop(), statusBarHeight),
+                                statusBarHeight,
                                 firstChild.getPaddingRight(),
                                 firstChild.getPaddingBottom()
                             );
-                            XposedBridge.log(TAG + ": Set first child top padding to " + statusBarHeight + "px");
+                            XposedBridge.log(TAG + ": Safe padding set to " + statusBarHeight + "px");
                         }
                     }
                 }
-                
-                // Approach 3: Set layout params with top margin
-                try {
-                    android.widget.FrameLayout.LayoutParams params = 
-                        new android.widget.FrameLayout.LayoutParams(
-                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT,
-                            android.widget.FrameLayout.LayoutParams.MATCH_PARENT
-                        );
-                    params.setMargins(0, statusBarHeight, 0, 0);
-                    contentView.setLayoutParams(params);
-                    XposedBridge.log(TAG + ": Applied FrameLayout margin approach");
-                } catch (Exception e) {
-                    XposedBridge.log(TAG + ": FrameLayout margin approach failed - " + e.getMessage());
-                }
             }
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to force content margin - " + e.getMessage());
+            XposedBridge.log(TAG + ": Safe content adjustment failed - " + e.getMessage());
         }
     }
     
@@ -712,38 +690,29 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * Get status bar height for Display object using multiple fallback methods
+     * Get status bar height using standard Android APIs
      */
     private int getStatusBarHeightForDisplay(Display display) {
         try {
-            // Try to get context from Display
-            Object windowManager = XposedHelpers.callMethod(display, "getWindowManager");
-            if (windowManager != null) {
-                Context context = (Context) XposedHelpers.callMethod(windowManager, "getContext");
+            // Try to get ActivityThread context (standard approach)
+            Object activityThread = XposedHelpers.callStaticMethod(XposedHelpers.findClass("android.app.ActivityThread", null), "currentActivityThread");
+            if (activityThread != null) {
+                Context context = (Context) XposedHelpers.callMethod(activityThread, "getSystemContext");
                 if (context != null) {
                     return getStatusBarHeight(context);
                 }
             }
         } catch (Exception e) {
-            // Fallback: try to get ActivityThread context
-            try {
-                Object activityThread = XposedHelpers.callStaticMethod(XposedHelpers.findClass("android.app.ActivityThread", null), "currentActivityThread");
-                Context context = (Context) XposedHelpers.callMethod(activityThread, "getSystemContext");
-                if (context != null) {
-                    return getStatusBarHeight(context);
-                }
-            } catch (Exception e2) {
-                // Final fallback
-            }
+            // Fallback
         }
         
-        // Ultimate fallback: use 24dp * density
+        // Ultimate fallback: use density * 24dp
         try {
             android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
             display.getMetrics(metrics);
             return (int) (24 * metrics.density + 0.5f);
         } catch (Exception e) {
-            return 48; // Hardcoded fallback
+            return 48; // Safe hardcoded fallback
         }
     }
 
