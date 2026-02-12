@@ -720,49 +720,5 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         }
     }
     
-    /**
-     * Adjust root view padding to avoid status bar overlap
-     */
-    private void adjustRootViewPadding(Activity activity) {
-        try {
-            Window window = activity.getWindow();
-            View decorView = window.getDecorView();
-            
-            // Find the root content view
-            View contentView = decorView.findViewById(android.R.id.content);
-            if (contentView != null) {
-                // Get status bar height
-                int statusBarHeight = getStatusBarHeight(activity);
-                
-                // Check if content might overlap with status bar
-                if (contentView.getPaddingTop() < statusBarHeight / 2) {
-                    XposedBridge.log(TAG + ": Potential status bar overlap detected, adjusting padding by " + statusBarHeight + "px");
-                    
-                    // Apply padding to avoid status bar overlap
-                    contentView.setPadding(
-                        contentView.getPaddingLeft(),
-                        statusBarHeight,
-                        contentView.getPaddingRight(),
-                        contentView.getPaddingBottom()
-                    );
-                }
-            }
-            
-            // For Android 11+, ensure proper window inset handling
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                try {
-                    Object controller = window.getInsetsController();
-                    if (controller != null) {
-                        // Ensure system bars are properly handled
-                        XposedHelpers.callMethod(controller, "show", 
-                            Class.forName("android.view.WindowInsets$Type").getField("statusBars").get(null));
-                    }
-                } catch (Exception e) {
-                    XposedBridge.log(TAG + ": WindowInsets adjustment failed - " + e.getMessage());
-                }
-            }
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Root view padding adjustment failed - " + e.getMessage());
-        }
-    }
+
 }
