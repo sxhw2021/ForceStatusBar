@@ -22,25 +22,22 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     
     private static final String TAG = "ForceStatusBar";
     
-    // Recursion prevention for DisplayMetrics hooks
-    private static volatile boolean isInDisplayMetricsHook = false;
-    
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) throws Throwable {
         hookWindowMethods(lpparam);
         hookDecorView(lpparam);
         hookActivityLifecycle(lpparam);
         
-        // NEW: Hook Display APIs to "lie" about screen size
-        hookDisplayMetrics(lpparam);
-        hookDisplaySize(lpparam);
+        // REMOVED: Display size deception - causes touch coordinate offset
+        // hookDisplayMetrics(lpparam);
+        // hookDisplaySize(lpparam);
         
         // Android 11+ use WindowInsetsController
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             hookWindowInsetsControllerImpl(lpparam);
         }
         
-        XposedBridge.log(TAG + ": Initialized with DisplayMetrics deception - " + lpparam.packageName);
+        XposedBridge.log(TAG + ": Initialized WITHOUT Display deception (touch-safe) - " + lpparam.packageName);
     }
     
     private void hookWindowMethods(XC_LoadPackage.LoadPackageParam lpparam) {
@@ -226,41 +223,20 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         Activity activity = (Activity) param.thisObject;
                         Window window = activity.getWindow();
                         
-                        // Clear ALL fullscreen-related flags aggressively
+                        // Simple and safe: Force status bar visible
                         window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
-                        window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
-                        
-                        // Force show status bar with multiple flags
                         window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                         
-                        // CRITICAL: Ensure window respects system UI boundaries
+                        // Force window to respect system UI
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            // Android 11+: FORCE the window to fit system windows
                             window.setDecorFitsSystemWindows(true);
-                            
-                            // Also try to set window attributes for maximum compatibility
-                            WindowManager.LayoutParams attrs = window.getAttributes();
-                            attrs.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_DEFAULT;
-                            window.setAttributes(attrs);
                         } else {
-                            // For older versions, set comprehensive window attributes
-                            WindowManager.LayoutParams attrs = window.getAttributes();
-                            attrs.flags |= WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN;
-                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_FULLSCREEN;
-                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS;
-                            attrs.flags &= ~WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN;
-                            window.setAttributes(attrs);
+                            View decorView = window.getDecorView();
+                            decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
                         }
                         
-                        // Adjust root view padding to avoid status bar overlap
-                        adjustRootViewPadding(activity);
-                        
-                        // Set system UI visibility
-                        View decorView = window.getDecorView();
-                        decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
+                        // Force content view to handle system insets properly
+                        forceContentViewFitsSystemWindows(activity);
                         
                         XposedBridge.log(TAG + ": Activity.onResume forced status bar - " + lpparam.packageName);
                     }
@@ -283,22 +259,17 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         Activity activity = (Activity) param.thisObject;
                         Window window = activity.getWindow();
                         
-                        // Force add FLAG_FORCE_NOT_FULLSCREEN
+                        // Force status bar visibility
                         window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
+                        window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
                         
-                        // Android 11+ enable Edge-to-Edge
+                        // Force content to respect system insets
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            window.setDecorFitsSystemWindows(false);
+                            window.setDecorFitsSystemWindows(true);
                         }
                         
-                        // Delay padding adjustment to ensure layout is ready
-                        window.getDecorView().post(new Runnable() {
-                            @Override
-                            public void run() {
-                                adjustRootViewPadding(activity);
-                                forceContentMargin(activity);
-                            }
-                        });
+                        // Force content view to handle system insets properly
+                        forceContentViewFitsSystemWindows(activity);
                         
                         XposedBridge.log(TAG + ": Activity.onCreate set status bar flags - " + lpparam.packageName);
                     }
@@ -411,73 +382,45 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * Safe content adjustment approach
+     * Force content view to fit system windows properly
      */
-    private void forceContentMargin(Activity activity) {
+    private void forceContentViewFitsSystemWindows(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
-            // Only use safe padding approach
+            // Force content view to fit system windows
             View contentView = decorView.findViewById(android.R.id.content);
-            if (contentView != null && contentView instanceof android.view.ViewGroup) {
-                android.view.ViewGroup viewGroup = (android.view.ViewGroup) contentView;
-                if (viewGroup.getChildCount() > 0) {
-                    View firstChild = viewGroup.getChildAt(0);
-                    if (firstChild != null) {
-                        int statusBarHeight = getStatusBarHeight(activity);
-                        int currentTop = firstChild.getPaddingTop();
-                        
-                        // Only add padding if needed
-                        if (currentTop < statusBarHeight) {
-                            firstChild.setPadding(
-                                firstChild.getPaddingLeft(),
-                                statusBarHeight,
-                                firstChild.getPaddingRight(),
-                                firstChild.getPaddingBottom()
-                            );
-                            XposedBridge.log(TAG + ": Safe padding set to " + statusBarHeight + "px");
+            if (contentView != null) {
+                // Force fitsSystemWindows = true
+                contentView.setFitsSystemWindows(true);
+                
+                // For Android 11+, also show status bars via InsetsController
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Object controller = window.getInsetsController();
+                    if (controller != null) {
+                        try {
+                            Class<?> insetsTypeClass = Class.forName("android.view.WindowInsets$Type");
+                            int statusBars = insetsTypeClass.getField("statusBars").getInt(null);
+                            XposedHelpers.callMethod(controller, "show", statusBars);
+                            XposedBridge.log(TAG + ": Forced status bars visible via InsetsController");
+                        } catch (Exception e) {
+                            XposedBridge.log(TAG + ": InsetsController show failed - " + e.getMessage());
                         }
                     }
                 }
+                
+                XposedBridge.log(TAG + ": Forced content view to fit system windows");
             }
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Safe content adjustment failed - " + e.getMessage());
+            XposedBridge.log(TAG + ": Failed to force content view fitsSystemWindows - " + e.getMessage());
         }
     }
     
-    /**
-     * Check if device is in landscape orientation
-     */
-    private boolean isLandscapeOrientation(Activity activity) {
-        try {
-            int orientation = activity.getResources().getConfiguration().orientation;
-            return orientation == Configuration.ORIENTATION_LANDSCAPE;
-        } catch (Exception e) {
-            return false;
-        }
+
     }
     
-    /**
-     * Hook DisplayMetrics APIs to "lie" about screen size
-     * Core idea: Let apps think screen height = physical height - status bar height
-     * FIXED: Added null checks and defensive programming
-     */
-    private void hookDisplayMetrics(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            // Hook Display.getMetrics() - API 1+
-            XposedHelpers.findAndHookMethod(
-                "android.view.Display",
-                lpparam.classLoader,
-                "getMetrics",
-                DisplayMetrics.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // Recursion prevention check
-                        if (isInDisplayMetricsHook) {
-                            return;  // Skip if we're already in a DisplayMetrics hook
-                        }
+
                         
                         DisplayMetrics metrics = (DisplayMetrics) param.args[0];
                         if (metrics == null) return;
@@ -589,132 +532,9 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         }
     }
     
-    /**
-     * Hook Display.getSize() and getRealSize() methods
-     */
-    private void hookDisplaySize(XC_LoadPackage.LoadPackageParam lpparam) {
-        try {
-            // Hook Display.getSize() - API 13+
-            XposedHelpers.findAndHookMethod(
-                "android.view.Display",
-                lpparam.classLoader,
-                "getSize",
-                Point.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // Recursion prevention check
-                        if (isInDisplayMetricsHook) {
-                            return;  // Skip if we're already in a DisplayMetrics hook
-                        }
-                        
-                        Point size = (Point) param.args[0];
-                        if (size == null) return;
-                        
-                        Display display = (Display) param.thisObject;
-                        
-                        try {
-                            isInDisplayMetricsHook = true;
-                            // Get real size first
-                            Point realSize = new Point();
-                            display.getRealSize(realSize);
-                            
-                            // Get status bar height
-                            int statusBarHeight = getStatusBarHeightForDisplay(display);
-                            
-                            // Modify size
-                            int originalY = size.y;
-                            size.y = realSize.y - statusBarHeight;
-                            
-                            XposedBridge.log(TAG + ": Display.getSize() - Original Y: " + originalY + 
-                                          ", Modified Y: " + size.y + 
-                                          ", StatusBar: " + statusBarHeight + "px");
-                        } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Failed to modify Display.getSize() - " + e.getMessage());
-                        } finally {
-                            isInDisplayMetricsHook = false;
-                        }
-                    }
-                }
-            );
-            
-            // Hook Display.getRealSize() - API 17+
-            XposedHelpers.findAndHookMethod(
-                "android.view.Display",
-                lpparam.classLoader,
-                "getRealSize",
-                Point.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // Recursion prevention check
-                        if (isInDisplayMetricsHook) {
-                            return;  // Skip if we're already in a DisplayMetrics hook
-                        }
-                        
-                        Point size = (Point) param.args[0];
-                        if (size == null) return;
-                        
-                        Display display = (Display) param.thisObject;
-                        
-                        try {
-                            isInDisplayMetricsHook = true;
-                            // Get real size
-                            Point realSize = new Point();
-                            display.getRealSize(realSize);
-                            
-                            // Get status bar height
-                            int statusBarHeight = getStatusBarHeightForDisplay(display);
-                            
-                            // Modify real size to match our deception
-                            int originalY = size.y;
-                            size.y = realSize.y - statusBarHeight;
-                            
-                            XposedBridge.log(TAG + ": Display.getRealSize() - Original Y: " + originalY + 
-                                          ", Modified Y: " + size.y + 
-                                          ", StatusBar: " + statusBarHeight + "px");
-                        } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Failed to modify Display.getRealSize() - " + e.getMessage());
-                        } finally {
-                            isInDisplayMetricsHook = false;
-                        }
-                    }
-                }
-            );
-            
-            XposedBridge.log(TAG + ": Display size hooks installed successfully");
-            
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to install Display size hooks - " + e.getMessage());
-        }
-    }
+
     
-    /**
-     * Get status bar height using standard Android APIs
-     */
-    private int getStatusBarHeightForDisplay(Display display) {
-        try {
-            // Try to get ActivityThread context (standard approach)
-            Object activityThread = XposedHelpers.callStaticMethod(XposedHelpers.findClass("android.app.ActivityThread", null), "currentActivityThread");
-            if (activityThread != null) {
-                Context context = (Context) XposedHelpers.callMethod(activityThread, "getSystemContext");
-                if (context != null) {
-                    return getStatusBarHeight(context);
-                }
-            }
-        } catch (Exception e) {
-            // Fallback
-        }
-        
-        // Ultimate fallback: use density * 24dp
-        try {
-            android.util.DisplayMetrics metrics = new android.util.DisplayMetrics();
-            display.getMetrics(metrics);
-            return (int) (24 * metrics.density + 0.5f);
-        } catch (Exception e) {
-            return 48; // Safe hardcoded fallback
-        }
-    }
+
 
     /**
      * Get status bar height using multiple fallback methods
