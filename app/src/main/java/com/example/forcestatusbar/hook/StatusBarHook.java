@@ -380,48 +380,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": Failed to adjust padding - " + e.getMessage());
         }
     }
-            
-            // Get the root view
-            View rootView = contentView.getChildAt(0);
-            if (rootView == null) {
-                return;
-            }
-            
-            // Get status bar height
-            int statusBarHeight = getStatusBarHeight(activity);
-            
-            if (statusBarHeight > 0) {
-                // Store original padding if not already stored
-                if (rootView.getTag() == null) {
-                    rootView.setTag(new int[]{
-                        rootView.getPaddingLeft(),
-                        rootView.getPaddingTop(),
-                        rootView.getPaddingRight(),
-                        rootView.getPaddingBottom()
-                    });
-                }
-                
-                int[] originalPadding = (int[]) rootView.getTag();
-                
-                // Simple adjustment: only add top padding for portrait, minimal for landscape
-                boolean isLandscape = isLandscapeOrientation(activity);
-                int topPadding = isLandscape ? Math.min(statusBarHeight / 4, 8) : statusBarHeight;
-                
-                // Apply adjusted padding
-                rootView.setPadding(
-                    originalPadding[0],
-                    originalPadding[1] + topPadding,
-                    originalPadding[2],
-                    originalPadding[3]
-                );
-                
-                XposedBridge.log(TAG + ": Applied padding adjustment - Landscape: " + isLandscape + 
-                          ", Top padding: " + topPadding + "px");
-            }
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to adjust padding - " + e.getMessage());
-        }
-    }
     
     /**
      * Check if device is in landscape orientation
@@ -493,7 +451,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // Apply the same deception as getMetrics()
+                        // Apply same deception as getMetrics()
                         android.graphics.DisplayMetrics metrics = (android.graphics.DisplayMetrics) param.args[0];
                         if (metrics == null) return;
                         
@@ -558,7 +516,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             // Get status bar height
                             int statusBarHeight = getStatusBarHeightForDisplay(display);
                             
-                            // Modify the size
+                            // Modify size
                             int originalY = size.y;
                             size.y = realSize.y - statusBarHeight;
                             
@@ -594,7 +552,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             // Get status bar height
                             int statusBarHeight = getStatusBarHeightForDisplay(display);
                             
-                            // Modify the real size to match our deception
+                            // Modify real size to match our deception
                             int originalY = size.y;
                             size.y = realSize.y - statusBarHeight;
                             
