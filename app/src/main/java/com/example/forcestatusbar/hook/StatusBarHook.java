@@ -527,59 +527,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": Failed to install DisplayMetrics hooks - " + e.getMessage());
         }
     }
-                    }
-                }
-            );
-            
-            // Hook Display.getRealMetrics() - API 17+
-            XposedHelpers.findAndHookMethod(
-                "android.view.Display",
-                lpparam.classLoader,
-                "getRealMetrics",
-                DisplayMetrics.class,
-                new XC_MethodHook() {
-                    @Override
-                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        // Recursion prevention check
-                        if (isInDisplayMetricsHook) {
-                            return;  // Skip if we're already in a DisplayMetrics hook
-                        }
-                        
-                        // Apply same deception as getMetrics()
-                        DisplayMetrics metrics = (DisplayMetrics) param.args[0];
-                        if (metrics == null) return;
-                        
-                        Display display = (Display) param.thisObject;
-                        
-                        try {
-                            isInDisplayMetricsHook = true;
-                            Point realSize = new Point();
-                            display.getRealSize(realSize);
-                            
-                            int statusBarHeight = getStatusBarHeightForDisplay(display);
-                            int originalHeight = metrics.heightPixels;
-                            metrics.heightPixels = realSize.y - statusBarHeight;
-                            
-                            
-                            
-                            XposedBridge.log(TAG + ": Display.getRealMetrics() - Original: " + originalHeight + 
-                                          ", Modified: " + metrics.heightPixels + 
-                                          ", StatusBar: " + statusBarHeight + "px");
-                        } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Failed to modify Display.getRealMetrics() - " + e.getMessage());
-                        } finally {
-                            isInDisplayMetricsHook = false;
-                        }
-                    }
-                }
-            );
-            
-            XposedBridge.log(TAG + ": DisplayMetrics hooks installed successfully");
-            
-        } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to install DisplayMetrics hooks - " + e.getMessage());
-        }
-    }
     
     /**
      * Hook Display.getSize() and getRealSize() methods
