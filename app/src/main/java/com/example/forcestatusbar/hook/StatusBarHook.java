@@ -179,16 +179,13 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
                         window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                         
-                        // Force window to respect system UI
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            window.setDecorFitsSystemWindows(true);
-                        } else {
-                            // For older versions, set system UI visibility
+                        // For older versions, set system UI visibility
+                        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
                             View decorView = window.getDecorView();
                             decorView.setSystemUiVisibility(View.SYSTEM_UI_FLAG_VISIBLE);
                         }
                         
-                        // Force content view to handle system insets properly
+                        // Force content view to handle system insets properly (includes Android R+ handling)
                         forceContentViewFitsSystemWindows(activity);
                     }
                 }
@@ -214,12 +211,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         window.addFlags(WindowManager.LayoutParams.FLAG_FORCE_NOT_FULLSCREEN);
                         window.clearFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
                         
-                        // Force content to respect system insets
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                            window.setDecorFitsSystemWindows(true);
-                        }
-                        
-                        // Force content view to handle system insets properly
+                        // Force content view to handle system insets properly (includes Android R+ handling)
                         forceContentViewFitsSystemWindows(activity);
                     }
                 }
@@ -274,34 +266,50 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     
     /**
      * Force content view to fit system windows properly
+     * FIXED: Properly handle WindowInsets to prevent content overlap
      */
     private void forceContentViewFitsSystemWindows(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
-            // Force content view to fit system windows
-            View contentView = decorView.findViewById(android.R.id.content);
-            if (contentView != null) {
-                // Force fitsSystemWindows = true
-                contentView.setFitsSystemWindows(true);
+            // For Android 11+, use proper WindowInsets handling
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // IMPORTANT: setDecorFitsSystemWindows(false) to handle insets manually
+                window.setDecorFitsSystemWindows(false);
                 
-                // For Android 11+, also show status bars via InsetsController
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                    Object controller = window.getInsetsController();
-                    if (controller != null) {
+                View contentView = decorView.findViewById(android.R.id.content);
+                if (contentView != null) {
+                    // Add listener to handle insets and set proper padding
+                    contentView.setOnApplyWindowInsetsListener((v, insets) -> {
                         try {
-                            Class<?> insetsTypeClass = Class.forName("android.view.WindowInsets$Type");
-                            int statusBars = insetsTypeClass.getField("statusBars").getInt(null);
-                            XposedHelpers.callMethod(controller, "show", statusBars);
-                            XposedBridge.log(TAG + ": Forced status bars visible via InsetsController");
+                            // Get status bar height from insets
+                            int statusBarHeight = insets.getInsets(android.view.WindowInsets.Type.statusBars()).top;
+                            
+                            // Set padding to move content below status bar
+                            v.setPadding(0, statusBarHeight, 0, 0);
+                            
+                            XposedBridge.log(TAG + ": Applied status bar padding: " + statusBarHeight + "px");
                         } catch (Exception e) {
-                            XposedBridge.log(TAG + ": InsetsController show failed - " + e.getMessage());
+                            XposedBridge.log(TAG + ": Failed to apply insets padding - " + e.getMessage());
                         }
-                    }
+                        return insets; // Return insets for child views
+                    });
+                    
+                    // Request insets application
+                    contentView.requestApplyInsets();
                 }
                 
-                XposedBridge.log(TAG + ": Forced content view to fit system windows");
+                XposedBridge.log(TAG + ": Enabled WindowInsets handling for content");
+            } else {
+                // For older versions, use traditional fitsSystemWindows
+                View contentView = decorView.findViewById(android.R.id.content);
+                if (contentView != null) {
+                    contentView.setFitsSystemWindows(true);
+                    contentView.requestApplyInsets();
+                }
+                
+                XposedBridge.log(TAG + ": Applied fitsSystemWindows for content");
             }
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to force content view fitsSystemWindows - " + e.getMessage());
