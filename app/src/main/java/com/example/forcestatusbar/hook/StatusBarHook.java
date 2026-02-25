@@ -2,12 +2,9 @@ package com.example.forcestatusbar.hook;
 
 import android.app.Activity;
 import android.content.Context;
-import android.content.res.Configuration;
 import android.os.Build;
-import android.graphics.Point;
+import android.graphics.Color;
 
-import android.util.DisplayMetrics;
-import android.view.Display;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
@@ -252,20 +249,20 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     
     /**
      * Force content view to fit system windows properly
-     * FIXED: Keep system default status bar color behavior
-     * REMOVED: Transparent status bar that showed black
+     * NEW: Apply app theme color to status bar for immersive effect
      */
     private void forceContentViewFitsSystemWindows(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
-            // Let system handle status bar color by default (no forced transparent)
-            // The app's theme colorPrimary will be used automatically
+            int statusBarColor = getThemeColor(activity);
             
             // For Android 11+, use proper WindowInsets handling
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 window.setDecorFitsSystemWindows(false);
+                
+                window.setStatusBarColor(statusBarColor);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
                 if (contentView != null) {
@@ -274,7 +271,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             int statusBarHeight = insets.getInsets(android.view.WindowInsets.Type.statusBars()).top;
                             v.setPadding(0, statusBarHeight, 0, 0);
                             
-                            XposedBridge.log(TAG + ": Applied status bar padding: " + statusBarHeight + "px");
+                            XposedBridge.log(TAG + ": Applied status bar padding: " + statusBarHeight + "px, color: #" + Integer.toHexString(statusBarColor));
                         } catch (Exception e) {
                             XposedBridge.log(TAG + ": Failed to apply insets padding - " + e.getMessage());
                         }
@@ -284,11 +281,10 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     contentView.requestApplyInsets();
                 }
                 
-                XposedBridge.log(TAG + ": Enabled status bar with system default color");
+                XposedBridge.log(TAG + ": Applied theme color to status bar: #" + Integer.toHexString(statusBarColor));
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                // Android 5.0+: Don't force status bar color
-                // Let the app's theme (colorPrimary) determine the status bar color
-                // Only ensure content is properly padded below status bar
+                // Android 5.0+: Set status bar to theme color
+                window.setStatusBarColor(statusBarColor);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
                 if (contentView != null) {
@@ -296,7 +292,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     contentView.requestApplyInsets();
                 }
                 
-                XposedBridge.log(TAG + ": Applied fitsSystemWindows for content");
+                XposedBridge.log(TAG + ": Applied theme color to status bar: #" + Integer.toHexString(statusBarColor));
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
                 // Android 4.4: Use translucent status bar
                 window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
@@ -311,5 +307,41 @@ public class StatusBarHook implements IXposedHookLoadPackage {
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to force content view fitsSystemWindows - " + e.getMessage());
         }
+    }
+    
+    /**
+     * Get the app's primary theme color for status bar
+     */
+    private int getThemeColor(Activity activity) {
+        int color = Color.parseColor("#212121"); // Default dark gray
+        
+        try {
+            // Try to get colorPrimary from theme
+            android.content.res.TypedArray ta = activity.obtainStyledAttributes(new int[] {
+                android.R.attr.colorPrimary,
+                android.R.attr.colorPrimaryDark,
+                android.R.attr.statusBarColor
+            });
+            
+            // Check statusBarColor first (most accurate)
+            color = ta.getColor(2, -1);
+            if (color == -1 || color == Color.TRANSPARENT) {
+                // Try colorPrimaryDark
+                color = ta.getColor(1, -1);
+            }
+            if (color == -1 || color == Color.TRANSPARENT) {
+                // Try colorPrimary
+                color = ta.getColor(0, -1);
+            }
+            if (color == -1 || color == Color.TRANSPARENT) {
+                color = Color.parseColor("#212121");
+            }
+            
+            ta.recycle();
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Failed to get theme color - " + e.getMessage());
+        }
+        
+        return color;
     }
 }
