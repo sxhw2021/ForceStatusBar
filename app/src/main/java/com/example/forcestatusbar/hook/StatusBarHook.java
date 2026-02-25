@@ -171,9 +171,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         Activity activity = (Activity) param.thisObject;
-                        Window window = activity.getWindow();
-                        
-                        // Force content view to handle system insets properly (includes immersive status bar)
                         forceContentViewFitsSystemWindows(activity);
                     }
                 }
@@ -193,15 +190,55 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
                         Activity activity = (Activity) param.thisObject;
-                        Window window = activity.getWindow();
-                        
-                        // Force content view to handle system insets properly (includes immersive status bar)
                         forceContentViewFitsSystemWindows(activity);
                     }
                 }
             );
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to hook Activity.onCreate - " + e.getMessage());
+        }
+        
+        // Hook Activity.onPostResume - runs after onResume, good time to apply final changes
+        try {
+            XposedHelpers.findAndHookMethod(
+                Activity.class.getName(),
+                lpparam.classLoader,
+                "onPostResume",
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Activity activity = (Activity) param.thisObject;
+                        forceContentViewFitsSystemWindows(activity);
+                    }
+                }
+            );
+        } catch (Exception e) {
+            // Ignore if onPostResume doesn't exist
+        }
+        
+        // Hook Window.setStatusBarColor to always use app's background color
+        try {
+            XposedHelpers.findAndHookMethod(
+                Window.class.getName(),
+                lpparam.classLoader,
+                "setStatusBarColor",
+                int.class,
+                new XC_MethodHook() {
+                    @Override
+                    protected void afterHookedMethod(MethodHookParam param) throws Throwable {
+                        Window window = (Window) param.thisObject;
+                        Activity activity = (Activity) XposedHelpers.getObjectField(window, "mContext");
+                        if (activity != null) {
+                            int bgColor = getWindowBackgroundColor(activity, window.getDecorView());
+                            if (bgColor != Color.TRANSPARENT && bgColor != 0) {
+                                window.setStatusBarColor(bgColor);
+                            }
+                        }
+                    }
+                }
+            );
+        } catch (Exception e) {
+            XposedBridge.log(TAG + ": Failed to hook setStatusBarColor - " + e.getMessage());
         }
     }
     
@@ -257,7 +294,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
-            int statusBarColor = getWindowBackgroundColor(activity, decorView);
+            final int statusBarColor = getWindowBackgroundColor(activity, decorView);
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
                 // Android 11+
@@ -270,10 +307,8 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                         try {
                             int statusBarHeight = insets.getInsets(android.view.WindowInsets.Type.statusBars()).top;
                             v.setPadding(0, statusBarHeight, 0, 0);
-                            
-                            XposedBridge.log(TAG + ": Applied status bar color: #" + Integer.toHexString(statusBarColor));
                         } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Failed to apply insets - " + e.getMessage());
+                            // Ignore
                         }
                         return insets;
                     });
@@ -293,8 +328,6 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     contentView.requestApplyInsets();
                 }
                 
-                XposedBridge.log(TAG + ": Applied status bar color: #" + Integer.toHexString(statusBarColor));
-                
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
                 // Android 4.4
                 window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
@@ -303,9 +336,10 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 if (contentView != null) {
                     contentView.setFitsSystemWindows(true);
                 }
-                
-                XposedBridge.log(TAG + ": Applied translucent status bar");
             }
+            
+            XposedBridge.log(TAG + ": Applied status bar color: #" + Integer.toHexString(statusBarColor));
+            
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to force content view fitsSystemWindows - " + e.getMessage());
         }
@@ -315,17 +349,41 @@ public class StatusBarHook implements IXposedHookLoadPackage {
      * Get the window background color for immersive status bar
      */
     private int getWindowBackgroundColor(Activity activity, View decorView) {
-        int color = Color.parseColor("#FFFFFF");
+        int color = Color.TRANSPARENT;
         
+        // Try to get from content root view first
+        try {
+            View contentView = decorView.findViewById(android.R.id.content);
+            if (contentView != null) {
+                View rootView = contentView.getRootView();
+                if (rootView != null) {
+                    Drawable bg = rootView.getBackground();
+                    if (bg instanceof ColorDrawable) {
+                        color = ((ColorDrawable) bg).getColor();
+                        if (color != Color.TRANSPARENT && color != 0) {
+                            return color;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // Ignore
+        }
+        
+        // Try decor view background
         try {
             Drawable background = decorView.getBackground();
             if (background instanceof ColorDrawable) {
                 color = ((ColorDrawable) background).getColor();
+                if (color != Color.TRANSPARENT && color != 0) {
+                    return color;
+                }
             }
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to get background color - " + e.getMessage());
+            // Ignore
         }
         
+        // Try theme attributes
         if (color == Color.TRANSPARENT || color == 0) {
             try {
                 android.content.res.TypedArray ta = activity.obtainStyledAttributes(new int[] {
@@ -341,13 +399,15 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 if (color == -1 || color == Color.TRANSPARENT) {
                     color = ta.getColor(2, -1);
                 }
-                if (color == -1 || color == Color.TRANSPARENT) {
-                    color = Color.parseColor("#FFFFFF");
-                }
                 ta.recycle();
             } catch (Exception e) {
-                color = Color.parseColor("#FFFFFF");
+                // Ignore
             }
+        }
+        
+        // Default to white if still not found
+        if (color == Color.TRANSPARENT || color == 0 || color == -1) {
+            color = Color.WHITE;
         }
         
         return color;
