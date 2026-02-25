@@ -1,8 +1,6 @@
 package com.example.forcestatusbar.hook;
 
 import android.app.Activity;
-import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.graphics.Color;
 
@@ -198,7 +196,7 @@ public class StatusBarHook implements IXposedHookLoadPackage {
             XposedBridge.log(TAG + ": Failed to hook Activity.onCreate - " + e.getMessage());
         }
         
-        // Hook Activity.onPostResume - runs after onResume, good time to apply final changes
+        // Hook Activity.onPostResume
         try {
             XposedHelpers.findAndHookMethod(
                 Activity.class.getName(),
@@ -213,32 +211,29 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 }
             );
         } catch (Exception e) {
-            // Ignore if onPostResume doesn't exist
+            // Ignore
         }
         
-        // Hook Window.setStatusBarColor to always use app's background color
+        // Hook Activity.onWindowFocusChanged to apply when window gains/loses focus
         try {
             XposedHelpers.findAndHookMethod(
-                Window.class.getName(),
+                Activity.class.getName(),
                 lpparam.classLoader,
-                "setStatusBarColor",
-                int.class,
+                "onWindowFocusChanged",
+                boolean.class,
                 new XC_MethodHook() {
                     @Override
                     protected void afterHookedMethod(MethodHookParam param) throws Throwable {
-                        Window window = (Window) param.thisObject;
-                        Activity activity = (Activity) XposedHelpers.getObjectField(window, "mContext");
-                        if (activity != null) {
-                            int bgColor = getWindowBackgroundColor(activity, window.getDecorView());
-                            if (bgColor != Color.TRANSPARENT && bgColor != 0) {
-                                window.setStatusBarColor(bgColor);
-                            }
+                        boolean hasFocus = (boolean) param.args[0];
+                        if (hasFocus) {
+                            Activity activity = (Activity) param.thisObject;
+                            forceContentViewFitsSystemWindows(activity);
                         }
                     }
                 }
             );
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to hook setStatusBarColor - " + e.getMessage());
+            // Ignore
         }
     }
     
@@ -286,51 +281,69 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * Force content view to fit system windows properly
-     * Set transparent status bar with app's background color showing through
+     * Apply transparent status bar - edge-to-edge mode
+     * Based on ImmersionBar approach - transparent status bar lets app content show through
      */
     private void forceContentViewFitsSystemWindows(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
-            final int statusBarColor = getWindowBackgroundColor(activity, decorView);
-            
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // Android 11+
+                // Android 11+ (API 30+)
                 window.setDecorFitsSystemWindows(false);
-                window.setStatusBarColor(statusBarColor);
+                window.setStatusBarColor(Color.TRANSPARENT);
+                window.setNavigationBarColor(Color.TRANSPARENT);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
                 if (contentView != null) {
                     contentView.setOnApplyWindowInsetsListener((v, insets) -> {
-                        try {
-                            int statusBarHeight = insets.getInsets(android.view.WindowInsets.Type.statusBars()).top;
-                            v.setPadding(0, statusBarHeight, 0, 0);
-                        } catch (Exception e) {
-                            // Ignore
-                        }
+                        int statusBarHeight = insets.getInsets(android.view.WindowInsets.Type.statusBars()).top;
+                        int navBarHeight = insets.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom;
+                        v.setPadding(0, statusBarHeight, 0, navBarHeight);
+                        return insets;
+                    });
+                    contentView.requestApplyInsets();
+                }
+                
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                // Android 10 (API 29)
+                window.setDecorFitsSystemWindows(false);
+                window.setStatusBarColor(Color.TRANSPARENT);
+                window.setNavigationBarColor(Color.TRANSPARENT);
+                
+                View contentView = decorView.findViewById(android.R.id.content);
+                if (contentView != null) {
+                    contentView.setOnApplyWindowInsetsListener((v, insets) -> {
+                        int statusBarHeight = insets.getInsets(android.view.WindowInsets.Type.statusBars()).top;
+                        int navBarHeight = insets.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom;
+                        v.setPadding(0, statusBarHeight, 0, navBarHeight);
                         return insets;
                     });
                     contentView.requestApplyInsets();
                 }
                 
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                // Android 5.0-10
-                window.setStatusBarColor(statusBarColor);
+                // Android 5.0-9 (API 21-28)
+                window.addFlags(WindowManager.LayoutParams.FLAG_DRAWS_SYSTEM_BAR_BACKGROUNDS);
+                window.clearFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+                window.setStatusBarColor(Color.TRANSPARENT);
+                window.setNavigationBarColor(Color.TRANSPARENT);
                 
-                int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE 
+                    | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN 
+                    | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION;
                 decorView.setSystemUiVisibility(flags);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
                 if (contentView != null) {
                     contentView.setFitsSystemWindows(true);
-                    contentView.requestApplyInsets();
                 }
                 
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                // Android 4.4
+                // Android 4.4 (API 19)
                 window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+                window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_NAVIGATION);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
                 if (contentView != null) {
@@ -338,78 +351,10 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 }
             }
             
-            XposedBridge.log(TAG + ": Applied status bar color: #" + Integer.toHexString(statusBarColor));
+            XposedBridge.log(TAG + ": Applied transparent status bar");
             
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to force content view fitsSystemWindows - " + e.getMessage());
+            XposedBridge.log(TAG + ": Failed - " + e.getMessage());
         }
-    }
-    
-    /**
-     * Get the window background color for immersive status bar
-     */
-    private int getWindowBackgroundColor(Activity activity, View decorView) {
-        int color = Color.TRANSPARENT;
-        
-        // Try to get from content root view first
-        try {
-            View contentView = decorView.findViewById(android.R.id.content);
-            if (contentView != null) {
-                View rootView = contentView.getRootView();
-                if (rootView != null) {
-                    Drawable bg = rootView.getBackground();
-                    if (bg instanceof ColorDrawable) {
-                        color = ((ColorDrawable) bg).getColor();
-                        if (color != Color.TRANSPARENT && color != 0) {
-                            return color;
-                        }
-                    }
-                }
-            }
-        } catch (Exception e) {
-            // Ignore
-        }
-        
-        // Try decor view background
-        try {
-            Drawable background = decorView.getBackground();
-            if (background instanceof ColorDrawable) {
-                color = ((ColorDrawable) background).getColor();
-                if (color != Color.TRANSPARENT && color != 0) {
-                    return color;
-                }
-            }
-        } catch (Exception e) {
-            // Ignore
-        }
-        
-        // Try theme attributes
-        if (color == Color.TRANSPARENT || color == 0) {
-            try {
-                android.content.res.TypedArray ta = activity.obtainStyledAttributes(new int[] {
-                    android.R.attr.colorPrimaryDark,
-                    android.R.attr.colorPrimary,
-                    android.R.attr.windowBackground
-                });
-                
-                color = ta.getColor(0, -1);
-                if (color == -1 || color == Color.TRANSPARENT) {
-                    color = ta.getColor(1, -1);
-                }
-                if (color == -1 || color == Color.TRANSPARENT) {
-                    color = ta.getColor(2, -1);
-                }
-                ta.recycle();
-            } catch (Exception e) {
-                // Ignore
-            }
-        }
-        
-        // Default to white if still not found
-        if (color == Color.TRANSPARENT || color == 0 || color == -1) {
-            color = Color.WHITE;
-        }
-        
-        return color;
     }
 }
