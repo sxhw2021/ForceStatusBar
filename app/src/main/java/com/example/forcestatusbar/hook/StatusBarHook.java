@@ -252,57 +252,44 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     
     /**
      * Force content view to fit system windows properly
-     * FIXED: Properly handle WindowInsets to prevent content overlap
-     * NEW: Support immersive status bar (transparent background)
+     * FIXED: Keep system default status bar color behavior
+     * REMOVED: Transparent status bar that showed black
      */
     private void forceContentViewFitsSystemWindows(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
-            // Make status bar transparent (immersive mode)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                // Android 5.0+: Set status bar color to transparent
-                window.setStatusBarColor(android.graphics.Color.TRANSPARENT);
-                
-                // Enable layout in fullscreen (content extends to status bar)
-                int flags = View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
-                decorView.setSystemUiVisibility(flags);
-            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                // Android 4.4-5.0: Use translucent status bar flag
-                window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
-            }
+            // Let system handle status bar color by default (no forced transparent)
+            // The app's theme colorPrimary will be used automatically
             
             // For Android 11+, use proper WindowInsets handling
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                // IMPORTANT: setDecorFitsSystemWindows(false) to handle insets manually
                 window.setDecorFitsSystemWindows(false);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
                 if (contentView != null) {
-                    // Add listener to handle insets and set proper padding
                     contentView.setOnApplyWindowInsetsListener((v, insets) -> {
                         try {
-                            // Get status bar height from insets
                             int statusBarHeight = insets.getInsets(android.view.WindowInsets.Type.statusBars()).top;
-                            
-                            // Set padding to move content below status bar
                             v.setPadding(0, statusBarHeight, 0, 0);
                             
                             XposedBridge.log(TAG + ": Applied status bar padding: " + statusBarHeight + "px");
                         } catch (Exception e) {
                             XposedBridge.log(TAG + ": Failed to apply insets padding - " + e.getMessage());
                         }
-                        return insets; // Return insets for child views
+                        return insets;
                     });
                     
-                    // Request insets application
                     contentView.requestApplyInsets();
                 }
                 
-                XposedBridge.log(TAG + ": Enabled immersive status bar (transparent)");
-            } else {
-                // For older versions, use traditional fitsSystemWindows
+                XposedBridge.log(TAG + ": Enabled status bar with system default color");
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                // Android 5.0+: Don't force status bar color
+                // Let the app's theme (colorPrimary) determine the status bar color
+                // Only ensure content is properly padded below status bar
+                
                 View contentView = decorView.findViewById(android.R.id.content);
                 if (contentView != null) {
                     contentView.setFitsSystemWindows(true);
@@ -310,6 +297,16 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                 }
                 
                 XposedBridge.log(TAG + ": Applied fitsSystemWindows for content");
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                // Android 4.4: Use translucent status bar
+                window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
+                
+                View contentView = decorView.findViewById(android.R.id.content);
+                if (contentView != null) {
+                    contentView.setFitsSystemWindows(true);
+                }
+                
+                XposedBridge.log(TAG + ": Applied translucent status bar");
             }
         } catch (Exception e) {
             XposedBridge.log(TAG + ": Failed to force content view fitsSystemWindows - " + e.getMessage());
