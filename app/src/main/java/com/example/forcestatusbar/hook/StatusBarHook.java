@@ -1,7 +1,8 @@
 package com.example.forcestatusbar.hook;
 
 import android.app.Activity;
-import android.content.Context;
+import android.graphics.drawable.ColorDrawable;
+import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.graphics.Color;
 
@@ -249,19 +250,18 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     
     /**
      * Force content view to fit system windows properly
-     * NEW: Apply app theme color to status bar for immersive effect
+     * Set transparent status bar with app's background color showing through
      */
     private void forceContentViewFitsSystemWindows(Activity activity) {
         try {
             Window window = activity.getWindow();
             View decorView = window.getDecorView();
             
-            int statusBarColor = getThemeColor(activity);
+            int statusBarColor = getWindowBackgroundColor(activity, decorView);
             
-            // For Android 11+, use proper WindowInsets handling
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                // Android 11+
                 window.setDecorFitsSystemWindows(false);
-                
                 window.setStatusBarColor(statusBarColor);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
@@ -271,20 +271,21 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                             int statusBarHeight = insets.getInsets(android.view.WindowInsets.Type.statusBars()).top;
                             v.setPadding(0, statusBarHeight, 0, 0);
                             
-                            XposedBridge.log(TAG + ": Applied status bar padding: " + statusBarHeight + "px, color: #" + Integer.toHexString(statusBarColor));
+                            XposedBridge.log(TAG + ": Applied status bar color: #" + Integer.toHexString(statusBarColor));
                         } catch (Exception e) {
-                            XposedBridge.log(TAG + ": Failed to apply insets padding - " + e.getMessage());
+                            XposedBridge.log(TAG + ": Failed to apply insets - " + e.getMessage());
                         }
                         return insets;
                     });
-                    
                     contentView.requestApplyInsets();
                 }
                 
-                XposedBridge.log(TAG + ": Applied theme color to status bar: #" + Integer.toHexString(statusBarColor));
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                // Android 5.0+: Set status bar to theme color
+                // Android 5.0-10
                 window.setStatusBarColor(statusBarColor);
+                
+                int flags = View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN;
+                decorView.setSystemUiVisibility(flags);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
                 if (contentView != null) {
@@ -292,9 +293,10 @@ public class StatusBarHook implements IXposedHookLoadPackage {
                     contentView.requestApplyInsets();
                 }
                 
-                XposedBridge.log(TAG + ": Applied theme color to status bar: #" + Integer.toHexString(statusBarColor));
+                XposedBridge.log(TAG + ": Applied status bar color: #" + Integer.toHexString(statusBarColor));
+                
             } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                // Android 4.4: Use translucent status bar
+                // Android 4.4
                 window.addFlags(WindowManager.LayoutParams.FLAG_TRANSLUCENT_STATUS);
                 
                 View contentView = decorView.findViewById(android.R.id.content);
@@ -310,36 +312,42 @@ public class StatusBarHook implements IXposedHookLoadPackage {
     }
     
     /**
-     * Get the app's primary theme color for status bar
+     * Get the window background color for immersive status bar
      */
-    private int getThemeColor(Activity activity) {
-        int color = Color.parseColor("#212121"); // Default dark gray
+    private int getWindowBackgroundColor(Activity activity, View decorView) {
+        int color = Color.parseColor("#FFFFFF");
         
         try {
-            // Try to get colorPrimary from theme
-            android.content.res.TypedArray ta = activity.obtainStyledAttributes(new int[] {
-                android.R.attr.colorPrimary,
-                android.R.attr.colorPrimaryDark,
-                android.R.attr.statusBarColor
-            });
-            
-            // Check statusBarColor first (most accurate)
-            color = ta.getColor(2, -1);
-            if (color == -1 || color == Color.TRANSPARENT) {
-                // Try colorPrimaryDark
-                color = ta.getColor(1, -1);
+            Drawable background = decorView.getBackground();
+            if (background instanceof ColorDrawable) {
+                color = ((ColorDrawable) background).getColor();
             }
-            if (color == -1 || color == Color.TRANSPARENT) {
-                // Try colorPrimary
-                color = ta.getColor(0, -1);
-            }
-            if (color == -1 || color == Color.TRANSPARENT) {
-                color = Color.parseColor("#212121");
-            }
-            
-            ta.recycle();
         } catch (Exception e) {
-            XposedBridge.log(TAG + ": Failed to get theme color - " + e.getMessage());
+            XposedBridge.log(TAG + ": Failed to get background color - " + e.getMessage());
+        }
+        
+        if (color == Color.TRANSPARENT || color == 0) {
+            try {
+                android.content.res.TypedArray ta = activity.obtainStyledAttributes(new int[] {
+                    android.R.attr.colorPrimaryDark,
+                    android.R.attr.colorPrimary,
+                    android.R.attr.windowBackground
+                });
+                
+                color = ta.getColor(0, -1);
+                if (color == -1 || color == Color.TRANSPARENT) {
+                    color = ta.getColor(1, -1);
+                }
+                if (color == -1 || color == Color.TRANSPARENT) {
+                    color = ta.getColor(2, -1);
+                }
+                if (color == -1 || color == Color.TRANSPARENT) {
+                    color = Color.parseColor("#FFFFFF");
+                }
+                ta.recycle();
+            } catch (Exception e) {
+                color = Color.parseColor("#FFFFFF");
+            }
         }
         
         return color;
